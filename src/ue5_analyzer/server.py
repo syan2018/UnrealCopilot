@@ -17,7 +17,11 @@ Configuration (via environment variables):
 - UE_PLUGIN_PORT: Port for UE5 Plugin HTTP API (default: 8080)
 """
 
+from __future__ import annotations
+
+import argparse
 import os
+import sys
 from fastmcp import FastMCP
 
 from .config import get_config
@@ -189,15 +193,88 @@ def initialize_from_environment():
         asyncio.run(init())
 
 
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="ue5-analyzer",
+        description="UE5 Project Analyzer MCP Server (FastMCP)",
+    )
+
+    parser.add_argument(
+        "--cpp-source-path",
+        help="项目 C++ 源码根目录（等价 CPP_SOURCE_PATH，优先级高于环境变量）",
+        default=None,
+    )
+    parser.add_argument(
+        "--unreal-engine-path",
+        help="UE 安装目录（等价 UNREAL_ENGINE_PATH，可选）",
+        default=None,
+    )
+    parser.add_argument(
+        "--ue-plugin-host",
+        help="UE 插件 HTTP API Host（等价 UE_PLUGIN_HOST）",
+        default=None,
+    )
+    parser.add_argument(
+        "--ue-plugin-port",
+        type=int,
+        help="UE 插件 HTTP API Port（等价 UE_PLUGIN_PORT）",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-init",
+        action="store_true",
+        help="不进行启动时初始化（跳过 initialize_from_environment）",
+    )
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        help="打印最终配置并退出（用于排查环境变量/参数覆盖）",
+    )
+
+    return parser
+
+
+def _apply_cli_overrides(args: argparse.Namespace) -> None:
+    """
+    Apply CLI arguments by overriding environment variables.
+
+    Design choice:
+    - Config / analyzer initialization in this project is env-driven
+    - CLI args should override env for a single-run convenience
+    """
+    if args.cpp_source_path:
+        os.environ["CPP_SOURCE_PATH"] = args.cpp_source_path
+    if args.unreal_engine_path:
+        os.environ["UNREAL_ENGINE_PATH"] = args.unreal_engine_path
+    if args.ue_plugin_host:
+        os.environ["UE_PLUGIN_HOST"] = args.ue_plugin_host
+    if args.ue_plugin_port is not None:
+        os.environ["UE_PLUGIN_PORT"] = str(args.ue_plugin_port)
+
+
 def main():
     """Run the MCP server."""
+    parser = _build_arg_parser()
+    args = parser.parse_args(sys.argv[1:])
+    _apply_cli_overrides(args)
+
+    if args.print_config:
+        cfg = get_config()
+        print("[UE5 Analyzer] Effective config:")
+        print("  CPP_SOURCE_PATH:", os.getenv("CPP_SOURCE_PATH"))
+        print("  UNREAL_ENGINE_PATH:", os.getenv("UNREAL_ENGINE_PATH"))
+        print("  UE_PLUGIN_URL:", cfg.ue_plugin_url)
+        print("  cpp_source_paths:", cfg.cpp_source_paths)
+        return
+
     register_tools()
     
     # Initialize from environment
-    try:
-        initialize_from_environment()
-    except Exception as e:
-        print(f"[UE5 Analyzer] Initialization error: {e}")
+    if not args.no_init:
+        try:
+            initialize_from_environment()
+        except Exception as e:
+            print(f"[UE5 Analyzer] Initialization error: {e}")
     
     mcp.run()
 

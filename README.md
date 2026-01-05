@@ -47,13 +47,24 @@ MCP Server for analyzing Unreal Engine 5 projects - Blueprint, Asset, and C++ so
 ### MCP Server Setup
 
 ```bash
-cd ue5-project-analyzer
+cd UnrealMCP
 
 # Install dependencies
 uv sync
 
 # Run the MCP server
 uv run ue5-analyzer
+```
+
+### Run with CLI Args (recommended)
+
+CLI 参数会覆盖环境变量（单次运行更方便）：
+
+```bash
+uv run ue5-analyzer -- \
+  --cpp-source-path "/path/to/LyraStarterGame/Source" \
+  --ue-plugin-host "localhost" \
+  --ue-plugin-port 8080
 ```
 
 ### UE5 Plugin Setup
@@ -68,6 +79,12 @@ uv run ue5-analyzer
 ### Environment Variables
 
 ```bash
+# Project C++ source root (recommended)
+CPP_SOURCE_PATH=/path/to/YourProject/Source
+
+# Optional: Unreal Engine install (for engine source analysis)
+UNREAL_ENGINE_PATH=/path/to/UE_5.3
+
 # UE5 Plugin API location
 UE_PLUGIN_HOST=localhost
 UE_PLUGIN_PORT=8080
@@ -82,7 +99,15 @@ Add to your MCP settings:
   "mcpServers": {
     "ue5-project-analyzer": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/ue5-project-analyzer", "ue5-analyzer"]
+      "args": [
+        "run",
+        "--directory",
+        "/path/to/UnrealMCP",
+        "ue5-analyzer",
+        "--",
+        "--cpp-source-path",
+        "/path/to/YourProject/Source"
+      ]
     }
   }
 }
@@ -176,6 +201,14 @@ uv run pytest
 
 # Lint
 uv run ruff check .
+```
+
+## Scripts
+
+### Lyra Smoke Test
+
+```bash
+uv run python scripts/lyra_smoke_test.py --cpp-source-path "/path/to/LyraStarterGame/Source"
 ```
 
 ## License

@@ -7,6 +7,7 @@ Usage (PowerShell):
 """
 
 import asyncio
+import argparse
 import os
 from pathlib import Path
 
@@ -14,7 +15,39 @@ from ue5_analyzer.config import get_config
 from ue5_analyzer.tools import asset, blueprint, cpp, cross_domain
 
 
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="lyra_smoke_test",
+        description="Smoke test for UE5 Project Analyzer tools on LyraStarterGame",
+    )
+    parser.add_argument(
+        "--cpp-source-path",
+        default=None,
+        help="LyraStarterGame/Source 路径（覆盖 CPP_SOURCE_PATH）",
+    )
+    parser.add_argument(
+        "--ue-plugin-host",
+        default=None,
+        help="UE 插件 HTTP host（覆盖 UE_PLUGIN_HOST）",
+    )
+    parser.add_argument(
+        "--ue-plugin-port",
+        type=int,
+        default=None,
+        help="UE 插件 HTTP port（覆盖 UE_PLUGIN_PORT）",
+    )
+    return parser
+
+
 async def main() -> None:
+    args = _build_arg_parser().parse_args()
+    if args.cpp_source_path:
+        os.environ["CPP_SOURCE_PATH"] = args.cpp_source_path
+    if args.ue_plugin_host:
+        os.environ["UE_PLUGIN_HOST"] = args.ue_plugin_host
+    if args.ue_plugin_port is not None:
+        os.environ["UE_PLUGIN_PORT"] = str(args.ue_plugin_port)
+
     # Source root is expected via env var (CPP_SOURCE_PATH). Fallback keeps the example runnable.
     source_root = Path(os.getenv("CPP_SOURCE_PATH") or r"D:\Projects\Games\Unreal Projects\LyraStarterGame\Source")
 
