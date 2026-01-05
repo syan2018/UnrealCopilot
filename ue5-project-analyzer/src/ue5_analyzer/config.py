@@ -1,5 +1,19 @@
 """
 Configuration management for UE5 Project Analyzer.
+
+All configuration is done via environment variables:
+
+C++ Analysis:
+- CPP_SOURCE_PATH: Path to project's C++ source directory (required for C++ analysis)
+- UNREAL_ENGINE_PATH: Path to UE5 installation (optional, for engine source)
+
+UE5 Plugin Communication:
+- UE_PLUGIN_HOST: Host for UE5 Plugin HTTP API (default: localhost)
+- UE_PLUGIN_PORT: Port for UE5 Plugin HTTP API (default: 8080)
+
+Cache Settings:
+- ANALYZER_CACHE_ENABLED: Enable caching (default: true)
+- ANALYZER_CACHE_MAX_SIZE: Maximum cache entries (default: 1000)
 """
 
 import os
@@ -7,20 +21,47 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _parse_bool(value: str | None, default: bool = True) -> bool:
+    """Parse boolean from environment variable."""
+    if value is None:
+        return default
+    return value.lower() in ("true", "1", "yes", "on")
+
+
 @dataclass
 class Config:
-    """Server configuration."""
+    """Server configuration loaded from environment variables."""
     
     # UE5 Plugin HTTP API
-    ue_plugin_host: str = field(default_factory=lambda: os.getenv("UE_PLUGIN_HOST", "localhost"))
-    ue_plugin_port: int = field(default_factory=lambda: int(os.getenv("UE_PLUGIN_PORT", "8080")))
+    ue_plugin_host: str = field(
+        default_factory=lambda: os.getenv("UE_PLUGIN_HOST", "localhost")
+    )
+    ue_plugin_port: int = field(
+        default_factory=lambda: int(os.getenv("UE_PLUGIN_PORT", "8080"))
+    )
     
     # C++ Source paths (for tree-sitter analysis)
     cpp_source_paths: list[str] = field(default_factory=list)
     
     # Cache settings
-    cache_enabled: bool = True
-    cache_max_size: int = 1000
+    cache_enabled: bool = field(
+        default_factory=lambda: _parse_bool(os.getenv("ANALYZER_CACHE_ENABLED"), True)
+    )
+    cache_max_size: int = field(
+        default_factory=lambda: int(os.getenv("ANALYZER_CACHE_MAX_SIZE", "1000"))
+    )
+    
+    def __post_init__(self):
+        """Initialize paths from environment after dataclass init."""
+        # Add CPP_SOURCE_PATH if set
+        cpp_source = os.getenv("CPP_SOURCE_PATH")
+        if cpp_source:
+            self.add_source_path(cpp_source)
+        
+        # Add UNREAL_ENGINE_PATH if set
+        unreal_path = os.getenv("UNREAL_ENGINE_PATH")
+        if unreal_path:
+            self.add_source_path(unreal_path)
     
     @property
     def ue_plugin_url(self) -> str:
@@ -50,3 +91,9 @@ def set_config(config: Config) -> None:
     """Set the global configuration instance."""
     global _config
     _config = config
+
+
+def reset_config() -> None:
+    """Reset configuration (useful for testing)."""
+    global _config
+    _config = None

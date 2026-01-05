@@ -1,7 +1,8 @@
 """
 Unreal Engine pattern detection.
 
-Detects UPROPERTY, UFUNCTION, UCLASS, and other UE-specific patterns.
+Detects UPROPERTY, UFUNCTION, UCLASS, and other UE-specific patterns
+to understand Blueprint ↔ C++ boundaries.
 """
 
 import re
@@ -19,7 +20,10 @@ class PatternMatch:
     suggestions: list[str]
 
 
-# Regex patterns for UE macros
+# ============================================================================
+# Regex Patterns for UE Macros
+# ============================================================================
+
 UE_PATTERNS = {
     "UPROPERTY": re.compile(
         r"UPROPERTY\s*\(([^)]*)\)\s*\n?\s*([\w\s\*<>:,&]+?)\s+(\w+)\s*(?:=|;)",
@@ -41,38 +45,135 @@ UE_PATTERNS = {
         r"UENUM\s*\(([^)]*)\)\s*enum\s+(?:class\s+)?(\w+)",
         re.MULTILINE
     ),
+    "UINTERFACE": re.compile(
+        r"UINTERFACE\s*\(([^)]*)\)\s*class\s+(?:\w+_API\s+)?(\w+)",
+        re.MULTILINE
+    ),
+    "GENERATED_BODY": re.compile(
+        r"GENERATED_(?:BODY|UCLASS_BODY|USTRUCT_BODY)\s*\(\s*\)",
+        re.MULTILINE
+    ),
 }
 
-# Blueprint-related specifiers
+
+# ============================================================================
+# Blueprint-Related Specifiers
+# ============================================================================
+
 BLUEPRINT_SPECIFIERS = {
+    # Function specifiers
     "BlueprintCallable",
     "BlueprintPure",
-    "BlueprintReadOnly",
-    "BlueprintReadWrite",
     "BlueprintImplementableEvent",
     "BlueprintNativeEvent",
+    "BlueprintAuthorityOnly",
+    "BlueprintCosmetic",
+    
+    # Property specifiers
+    "BlueprintReadOnly",
+    "BlueprintReadWrite",
+    "BlueprintGetter",
+    "BlueprintSetter",
+    
+    # Class specifiers
     "Blueprintable",
     "BlueprintType",
+    "NotBlueprintable",
+    
+    # Editor specifiers
     "EditAnywhere",
+    "EditDefaultsOnly",
+    "EditInstanceOnly",
     "VisibleAnywhere",
+    "VisibleDefaultsOnly",
+    "VisibleInstanceOnly",
 }
 
 
+# ============================================================================
+# Replication Specifiers
+# ============================================================================
+
+REPLICATION_SPECIFIERS = {
+    "Replicated",
+    "ReplicatedUsing",
+    "NotReplicated",
+    "Server",
+    "Client",
+    "NetMulticast",
+    "Reliable",
+    "Unreliable",
+}
+
+
+# ============================================================================
+# Pattern Detection Functions
+# ============================================================================
+
 def parse_specifiers(specifiers_str: str) -> list[str]:
-    """Parse specifiers from a macro argument string."""
-    # Remove nested parentheses content for simpler parsing
-    cleaned = re.sub(r'\([^)]*\)', '', specifiers_str)
-    return [s.strip() for s in cleaned.split(',') if s.strip()]
+    """
+    Parse specifiers from a macro argument string.
+    
+    Args:
+        specifiers_str: The string inside macro parentheses
+    
+    Returns:
+        List of individual specifiers
+    """
+    result = []
+    depth = 0
+    current = ""
+    
+    for char in specifiers_str:
+        if char == '(':
+            depth += 1
+            current += char
+        elif char == ')':
+            depth -= 1
+            current += char
+        elif char == ',' and depth == 0:
+            if current.strip():
+                result.append(current.strip())
+            current = ""
+        else:
+            current += char
+    
+    if current.strip():
+        result.append(current.strip())
+    
+    return result
 
 
 def detect_ue_pattern(content: str, file_path: str) -> list[dict]:
-    """Detect all UE patterns in file content."""
+    """
+    Detect all UE patterns in file content.
+    
+    Identifies UPROPERTY, UFUNCTION, UCLASS, USTRUCT, UENUM patterns
+    and extracts their specifiers to determine Blueprint exposure.
+    
+    Args:
+        content: File content to analyze
+        file_path: Path to the file (for reporting)
+    
+    Returns:
+        List of detected patterns with details including:
+        - pattern_type: UPROPERTY, UFUNCTION, UCLASS, etc.
+        - name: Name of the item
+        - specifiers: List of specifiers
+        - line: Line number
+        - context: Surrounding code
+        - is_blueprint_exposed: Whether exposed to Blueprints
+        - is_replicated: Whether marked for replication
+    """
     patterns = []
     lines = content.split('\n')
     
     for pattern_type, regex in UE_PATTERNS.items():
+        if pattern_type == "GENERATED_BODY":
+            continue
+            
         for match in regex.finditer(content):
-            specifiers_str = match.group(1)
+            specifiers_str = match.group(1) if match.lastindex >= 1 else ""
             specifiers = parse_specifiers(specifiers_str)
             
             # Get line number
@@ -83,14 +184,16 @@ def detect_ue_pattern(content: str, file_path: str) -> list[dict]:
             end_line = min(len(lines), line_num + 3)
             context = '\n'.join(lines[start_line:end_line])
             
-            # Generate suggestions
-            suggestions = generate_suggestions(pattern_type, specifiers, context)
-            
-            # Get the name (different group depending on pattern)
-            if pattern_type in ("UCLASS", "USTRUCT", "UENUM"):
+            # Get the name
+            if pattern_type in ("UCLASS", "USTRUCT", "UENUM", "UINTERFACE"):
                 name = match.group(2)
             else:
-                name = match.group(3)
+                name = match.group(3) if match.lastindex >= 3 else ""
+            
+            # Check Blueprint and replication exposure
+            specifier_names = {s.split("=")[0].strip() for s in specifiers}
+            is_blueprint_exposed = bool(specifier_names & BLUEPRINT_SPECIFIERS)
+            is_replicated = bool(specifier_names & REPLICATION_SPECIFIERS)
             
             patterns.append({
                 "pattern_type": pattern_type,
@@ -98,30 +201,8 @@ def detect_ue_pattern(content: str, file_path: str) -> list[dict]:
                 "specifiers": specifiers,
                 "line": line_num,
                 "context": context,
-                "suggestions": suggestions,
-                "is_blueprint_exposed": any(s in BLUEPRINT_SPECIFIERS for s in specifiers),
+                "is_blueprint_exposed": is_blueprint_exposed,
+                "is_replicated": is_replicated,
             })
     
     return patterns
-
-
-def generate_suggestions(pattern_type: str, specifiers: list[str], context: str) -> list[str]:
-    """Generate improvement suggestions for a pattern."""
-    suggestions = []
-    
-    if pattern_type == "UPROPERTY":
-        if not any("Category" in s for s in specifiers):
-            suggestions.append("Consider adding a Category for better organization")
-        
-        if "BlueprintReadWrite" in specifiers and not any("Meta" in s for s in specifiers):
-            suggestions.append("Consider adding Meta specifiers for validation")
-    
-    elif pattern_type == "UFUNCTION":
-        if "BlueprintCallable" in specifiers and not any("Category" in s for s in specifiers):
-            suggestions.append("Consider adding a Category for Blueprint organization")
-    
-    elif pattern_type == "UCLASS":
-        if "Blueprintable" not in specifiers and "NotBlueprintable" not in specifiers:
-            suggestions.append("Consider explicitly specifying Blueprintable or NotBlueprintable")
-    
-    return suggestions
