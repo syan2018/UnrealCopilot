@@ -202,7 +202,7 @@ ue5-project-analyzer/
 ├── README.md
 ├── pyproject.toml                    # uv 项目配置
 │
-├── src/ue5_analyzer/                 # MCP Server (外部运行)
+├── Mcp/src/ue5_analyzer/             # MCP Server (外部运行)
 │   ├── __init__.py
 │   ├── server.py                     # MCP 入口
 │   │
@@ -224,21 +224,16 @@ ue5-project-analyzer/
 │   │
 │   └── config.py
 │
-├── unreal-plugin/                    # UE5 插件 (Editor 内运行)
-│   ├── UE5ProjectAnalyzer.uplugin
-│   ├── Source/UE5ProjectAnalyzer/    # C++ 代码
-│   │   ├── Public/
-│   │   ├── Private/
-│   │   │   ├── Module.cpp            # 模块启动，拉起 Python Bridge
-│   │   │   ├── HttpServer.cpp        # HTTP API Server
-│   │   │   ├── BlueprintAnalyzer.cpp # 蓝图分析
-│   │   │   └── AssetAnalyzer.cpp     # 资产引用分析
-│   │   └── UE5ProjectAnalyzer.Build.cs
-│   │
-│   └── Content/Python/               # Python Bridge (随插件分发)
-│       └── bridge_server.py          # 被 C++ 自动拉起
+├── UE5ProjectAnalyzer.uplugin        # 插件描述文件（仓库根即插件根）
+├── Source/UE5ProjectAnalyzer/        # UE5 C++ 插件代码
+│   ├── Public/
+│   ├── Private/
+│   └── UE5ProjectAnalyzer.Build.cs
 │
-└── tests/
+└── Content/Python/                   # Python Bridge (随插件分发)
+    └── bridge_server.py              # 被 C++ 自动拉起
+│
+└── Mcp/tests/
 ```
 
 ### 3.4 关键设计决策
@@ -423,7 +418,7 @@ SK_Mannequin (骨骼资产) 的引用情况：
 ### 7.2 核心功能
 
 ```python
-# src/ue5_analyzer/cpp_analyzer/analyzer.py
+# Mcp/src/ue5_analyzer/cpp_analyzer/analyzer.py
 
 class CppAnalyzer:
     """C++ 源码分析器 - 基于 tree-sitter"""

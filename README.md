@@ -82,8 +82,8 @@ uv run ue5-analyzer -- \
 
 ### UE5 Plugin Setup
 
-1. Copy `unreal-plugin/` folder to your UE5 project's `Plugins/` directory
-2. Rename to `UE5ProjectAnalyzer/`
+1. Copy this repository folder to your UE5 project's `Plugins/` directory
+2. Ensure the folder name is `UE5ProjectAnalyzer/` (matches `UE5ProjectAnalyzer.uplugin`)
 3. Enable the plugin in UE5 Editor (Edit → Plugins → UE5 Project Analyzer)
 4. Restart the Editor
 
@@ -221,7 +221,7 @@ uv run ruff check .
 ### Lyra Smoke Test
 
 ```bash
-uv run python scripts/lyra_smoke_test.py --cpp-source-path "/path/to/LyraStarterGame/Source"
+uv run python Mcp/scripts/lyra_smoke_test.py --cpp-source-path "/path/to/LyraStarterGame/Source"
 ```
 
 ## License

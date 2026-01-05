@@ -44,6 +44,25 @@ private:
     void RegisterRoutes(TSharedPtr<IHttpRouter> Router);
 
 private:
+    // =====================================================================
+    // Editor integration: Settings + Toolbar
+    // =====================================================================
+
+    void RegisterSettings();
+    void UnregisterSettings();
+
+    void RegisterMenus();
+    void UnregisterMenus();
+
+    void StartMcpServer();
+    void StopMcpServer();
+    void CopyMcpUrlToClipboard() const;
+    void OpenPluginSettings() const;
+
+    bool CanStartMcpServer() const;
+    bool CanStopMcpServer() const;
+
+private:
     /** HTTP server port */
     int32 HttpPort = 8080;
     
@@ -52,4 +71,7 @@ private:
     
     /** Whether Python bridge is initialized */
     bool bPythonBridgeInitialized = false;
+
+    /** External MCP Server process manager (uv run ...) */
+    class FUE5ProjectAnalyzerMcpLauncher* McpLauncher = nullptr;
 };

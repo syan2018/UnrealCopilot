@@ -35,6 +35,15 @@ public class UE5ProjectAnalyzer : ModuleRules
             
             // Python integration
             "PythonScriptPlugin",
+
+            // UI / Editor integration (toolbar + settings)
+            "ToolMenus",
+            "LevelEditor",
+            "Slate",
+            "SlateCore",
+            "Projects",
+            "Settings",
+            "ApplicationCore",
         });
     }
 }

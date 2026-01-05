@@ -1219,7 +1219,7 @@ PublicDependencyModuleNames.AddRange(new string[] {
 ### 7.1 单元测试
 
 ```python
-# tests/test_cpp_analyzer.py
+# Mcp/tests/test_cpp_analyzer.py
 import pytest
 from cpp_analyzer import CppBlueprintAnalyzer
 
@@ -1242,7 +1242,7 @@ def test_blueprint_exposure_detection():
 ### 7.2 集成测试
 
 ```python
-# tests/test_integration.py
+# Mcp/tests/test_integration.py
 import pytest
 
 def test_blueprint_cpp_dependency_flow():
@@ -1293,6 +1293,21 @@ def test_cpp_to_blueprint_reverse_lookup():
 
 ## 十、后续演进
 
+### 10.1 短期（v1.1）
+- [ ] 支持 Widget Blueprint 分析
+- [ ] 支持 Animation Blueprint 分析
+- [ ] 增加依赖图可视化导出
+
+### 10.2 中期（v1.5）
+- [ ] 智能代码补全建议
+- [ ] C++ 最佳实践检查
+- [ ] 蓝图到 C++ 迁移辅助
+
+### 10.3 长期（v2.0）
+- [ ] 多项目协作支持
+- [ ] 版本对比分析
+- [ ] AI 驱动的架构优化建议
+
 ## 十一、UE 内“快捷启动 MCP Server”设想（建议方案）
 
 目标：让本项目可以**作为一个完整插件目录**放入 UE 项目的 `Plugins/` 下，并在 Editor UI 提供一个按钮用于启动/停止 MCP Server，减少用户手工配置成本。
@@ -1325,20 +1340,6 @@ def test_cpp_to_blueprint_reverse_lookup():
 - **Process**：使用 `FPlatformProcess::CreateProc` 拉起 `uv run ...`，保存进程句柄并在 Editor 退出时清理
 - **安全默认值**：HTTP 监听默认 `127.0.0.1`（不对局域网开放）
 
-### 10.1 短期（v1.1）
-- [ ] 支持 Widget Blueprint 分析
-- [ ] 支持 Animation Blueprint 分析
-- [ ] 增加依赖图可视化导出
-
-### 10.2 中期（v1.5）
-- [ ] 智能代码补全建议
-- [ ] C++ 最佳实践检查
-- [ ] 蓝图到 C++ 迁移辅助
-
-### 10.3 长期（v2.0）
-- [ ] 多项目协作支持
-- [ ] 版本对比分析
-- [ ] AI 驱动的架构优化建议
 
 ---
 

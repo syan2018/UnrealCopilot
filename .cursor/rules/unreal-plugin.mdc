@@ -7,13 +7,13 @@ globs: "*.cpp,*.h,*.cs"
 ## 插件结构
 
 ```
-unreal-plugin/
-├── UE5ProjectAnalyzer.uplugin    # 插件描述文件
+UE5ProjectAnalyzer/ (插件根目录)
+├── UE5ProjectAnalyzer.uplugin         # 插件描述文件
 ├── Source/UE5ProjectAnalyzer/
-│   ├── Public/                   # 头文件
-│   ├── Private/                  # 实现文件
+│   ├── Public/                        # 头文件
+│   ├── Private/                       # 实现文件
 │   └── UE5ProjectAnalyzer.Build.cs
-└── Content/Python/               # Python Bridge 脚本
+└── Content/Python/                    # Python Bridge 脚本
 ```
 
 ## 模块职责

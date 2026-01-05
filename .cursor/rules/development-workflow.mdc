@@ -16,9 +16,9 @@ description: "开发流程和优先级指南"
 - UE 模式检测 (`detect_ue_patterns`)
 
 关键文件:
-- [analyzer.py](mdc:ue5-project-analyzer/src/ue5_analyzer/cpp_analyzer/analyzer.py)
-- [patterns.py](mdc:ue5-project-analyzer/src/ue5_analyzer/cpp_analyzer/patterns.py)
-- [queries.py](mdc:ue5-project-analyzer/src/ue5_analyzer/cpp_analyzer/queries.py)
+- [analyzer.py](mdc:Mcp/src/ue5_analyzer/cpp_analyzer/analyzer.py)
+- [patterns.py](mdc:Mcp/src/ue5_analyzer/cpp_analyzer/patterns.py)
+- [queries.py](mdc:Mcp/src/ue5_analyzer/cpp_analyzer/queries.py)
 
 ### P2 - UE5 插件核心
 
@@ -27,7 +27,7 @@ description: "开发流程和优先级指南"
 - Asset 引用查询 (references, referencers)
 
 关键文件:
-- [UE5ProjectAnalyzer.cpp](mdc:ue5-project-analyzer/unreal-plugin/Source/UE5ProjectAnalyzer/Private/UE5ProjectAnalyzer.cpp)
+- [UE5ProjectAnalyzer.cpp](mdc:Source/UE5ProjectAnalyzer/Private/UE5ProjectAnalyzer.cpp)
 
 ### P3 - 整合验证
 
@@ -56,8 +56,8 @@ uv run ruff format .
 
 ### UE5 插件
 
-1. 复制 `unreal-plugin/` 到 UE 项目的 `Plugins/` 目录
-2. 重命名为 `UE5ProjectAnalyzer/`
+1. 复制本仓库目录到 UE 项目的 `Plugins/` 目录
+2. 确保目录名为 `UE5ProjectAnalyzer/`（与 `UE5ProjectAnalyzer.uplugin` 一致）
 3. 用 UE 编辑器打开项目，编译插件
 4. 启用插件
 
@@ -66,7 +66,7 @@ uv run ruff format .
 ### 单元测试
 
 ```bash
-uv run pytest tests/test_cpp_analyzer.py -v
+uv run pytest Mcp/tests/test_cpp_analyzer.py -v
 ```
 
 ### 集成测试 (需要 UE 插件运行)
@@ -75,7 +75,7 @@ uv run pytest tests/test_cpp_analyzer.py -v
 # 确保 UE 编辑器已启动且插件已启用
 # 确保 HTTP API 在 localhost:8080 可用
 
-uv run pytest tests/test_integration.py -v
+uv run pytest Mcp/tests/test_integration.py -v
 ```
 
 ### Lyra 项目验证
