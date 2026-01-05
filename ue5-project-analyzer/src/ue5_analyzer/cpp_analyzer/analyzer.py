@@ -18,7 +18,7 @@ from typing import Any, Literal
 import re
 
 import tree_sitter_cpp as tscpp
-from tree_sitter import Language, Parser, Query as TSQuery
+from tree_sitter import Language, Parser, Query as TSQuery, QueryCursor
 
 from ..config import get_config
 from .queries import QUERY_PATTERNS
@@ -267,20 +267,29 @@ class CppAnalyzer:
         query = self._query_cache.get("CLASS")
         if not query:
             return
-        
-        captures = query.captures(tree.root_node)
-        
-        # Group captures by class
-        current_class_name = None
-        
-        for node, capture_name in captures:
-            if capture_name == "class_name":
-                current_class_name = node.text.decode()
-            elif capture_name == "class" and current_class_name:
-                class_info = self._extract_class_info(node, file_path, current_class_name)
-                if class_info:
-                    self._class_cache[current_class_name] = class_info
-                current_class_name = None
+
+        # py-tree-sitter >= 0.25: Query execution is done via QueryCursor
+        cursor = QueryCursor(query)
+        matches = cursor.matches(tree.root_node)
+
+        for _, captured in matches:
+            # captured: dict[str, list[Node]]
+            name_nodes = captured.get("class_name") or []
+            class_nodes = captured.get("class") or []
+            body_nodes = captured.get("class_body") or []
+            if not name_nodes or not class_nodes:
+                continue
+
+            # Skip forward declarations (no class body)
+            if not body_nodes:
+                continue
+
+            class_name = name_nodes[0].text.decode(errors="ignore")
+            class_node = class_nodes[0]
+
+            class_info = self._extract_class_info(class_node, file_path, class_name)
+            if class_info:
+                self._class_cache[class_name] = class_info
     
     # ========================================================================
     # Class Analysis
@@ -294,8 +303,10 @@ class CppAnalyzer:
             line=node.start_point[0] + 1,
         )
         
-        # Extract superclasses
-        class_info.superclasses = self._extract_superclasses(node)
+        # Extract base classes / interfaces (multiple inheritance)
+        base_types = self._extract_base_types(node)
+        class_info.superclasses = [b for b in base_types if not b.startswith("I")]
+        class_info.interfaces = [b for b in base_types if b.startswith("I")]
         
         # Find the class body (field_declaration_list)
         body_node = None
@@ -332,25 +343,53 @@ class CppAnalyzer:
         
         return class_info
     
-    def _extract_superclasses(self, class_node: Any) -> list[str]:
-        """Extract superclass names from a class node."""
-        superclasses = []
+    def _extract_base_types(self, class_node: Any) -> list[str]:
+        """
+        Extract base types from a class node.
+
+        In tree-sitter-cpp, `base_class_clause` for a class like:
+          class A : public B, public IInterface { ... }
+        is represented as alternating `access_specifier` and `type_identifier` nodes.
+        """
+        bases: list[str] = []
+
+        base_clause = None
         for child in class_node.children:
             if child.type == "base_class_clause":
-                for base in child.children:
-                    if base.type == "type_identifier":
-                        superclasses.append(base.text.decode())
-                    elif base.type == "qualified_identifier":
-                        text = base.text.decode()
-                        parts = text.split("::")
-                        superclasses.append(parts[-1])
-        return superclasses
+                base_clause = child
+                break
+        if not base_clause:
+            return bases
+
+        for child in base_clause.children:
+            if child.type in ("type_identifier", "qualified_identifier", "scoped_identifier"):
+                text = child.text.decode(errors="ignore").strip()
+                if not text:
+                    continue
+                bases.append(text.split("::")[-1])
+
+        return bases
+
+    def _iter_descendants(self, node: Any) -> list[Any]:
+        """
+        Iterate all descendants of a node (depth-first).
+
+        Note: py-tree-sitter Node does not expose a `.descendants` helper in 0.25.x,
+        so we implement our own traversal using `.children`.
+        """
+        stack = list(getattr(node, "children", []) or [])
+        while stack:
+            cur = stack.pop()
+            yield cur
+            children = getattr(cur, "children", None)
+            if children:
+                stack.extend(children)
     
     def _extract_method_info(self, node: Any, visibility: str) -> MethodInfo | None:
         """Extract method information from a function node."""
         # Find the function declarator
         declarator = None
-        for child in node.descendants:
+        for child in self._iter_descendants(node):
             if child.type == "function_declarator":
                 declarator = child
                 break

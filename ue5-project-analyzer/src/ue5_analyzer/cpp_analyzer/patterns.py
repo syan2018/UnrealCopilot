@@ -25,14 +25,17 @@ class PatternMatch:
 # ============================================================================
 
 UE_PATTERNS = {
+    # UPROPERTY - handles UE_API and other macros between UPROPERTY and type
     "UPROPERTY": re.compile(
-        r"UPROPERTY\s*\(([^)]*)\)\s*\n?\s*([\w\s\*<>:,&]+?)\s+(\w+)\s*(?:=|;)",
+        r"UPROPERTY\s*\(([^)]*)\)\s*\n?\s*(?:\w+_API\s+)?([\w\s\*<>:,&]+?)\s+(\w+)\s*(?:=|;|\[)",
         re.MULTILINE
     ),
+    # UFUNCTION - handles UE_API and other export macros
     "UFUNCTION": re.compile(
-        r"UFUNCTION\s*\(([^)]*)\)\s*\n?\s*([\w\s\*<>:&]+?)\s+(\w+)\s*\([^)]*\)",
+        r"UFUNCTION\s*\(([^)]*)\)\s*\n?\s*(?:\w+_API\s+)?([\w\s\*<>:&]+?)\s+(\w+)\s*\([^)]*\)",
         re.MULTILINE
     ),
+    # UCLASS - handles various API export macros
     "UCLASS": re.compile(
         r"UCLASS\s*\(([^)]*)\)\s*class\s+(?:\w+_API\s+)?(\w+)",
         re.MULTILINE
