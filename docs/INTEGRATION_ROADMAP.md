@@ -1293,6 +1293,38 @@ def test_cpp_to_blueprint_reverse_lookup():
 
 ## 十、后续演进
 
+## 十一、UE 内“快捷启动 MCP Server”设想（建议方案）
+
+目标：让本项目可以**作为一个完整插件目录**放入 UE 项目的 `Plugins/` 下，并在 Editor UI 提供一个按钮用于启动/停止 MCP Server，减少用户手工配置成本。
+
+### 11.1 关键约束
+
+- **不要求用户修改 Unreal 内置 Python 环境**：MCP Server 作为外部 Python 进程运行（由 `uv` 管理依赖）
+- UE 插件只负责：
+  - 暴露 Editor 内 HTTP API（本项目的 `:8080`）
+  - 负责启动/停止外部 MCP Server 进程（可选）
+- FastMCP 支持 `transport="http"`，可作为本机 HTTP 服务对外提供 MCP（例如 `127.0.0.1:8000/mcp`）
+
+### 11.2 推荐的两种运行模式
+
+- **模式 A（Cursor 常用）**：stdio
+  - Cursor 通过 MCP 配置直接启动：`uv run ue5-analyzer`
+  - 优点：最简单、最稳定；无需 UE 侧管理进程
+
+- **模式 B（快捷连接/调试/其他客户端）**：HTTP
+  - UE Editor 按钮启动：`uv run ue5-analyzer -- --transport http --mcp-host 127.0.0.1 --mcp-port 8000 --mcp-path /mcp`
+  - 优点：本机常驻服务，便于复用；可在 UE 内显示 URL / 一键复制
+
+### 11.3 UE 插件侧实现要点（后续任务）
+
+- **Settings**：提供 `UUE5ProjectAnalyzerSettings`
+  - `CppSourcePath` 自动填充为 `<Project>/Source`
+  - `McpTransport`（stdio/http/sse）、`McpHost`、`McpPort`、`McpPath`
+  - `UvExecutable`（可选，默认 `uv`）
+- **UI**：在主工具栏提供按钮（Start/Stop），并显示运行状态与连接信息
+- **Process**：使用 `FPlatformProcess::CreateProc` 拉起 `uv run ...`，保存进程句柄并在 Editor 退出时清理
+- **安全默认值**：HTTP 监听默认 `127.0.0.1`（不对局域网开放）
+
 ### 10.1 短期（v1.1）
 - [ ] 支持 Widget Blueprint 分析
 - [ ] 支持 Animation Blueprint 分析

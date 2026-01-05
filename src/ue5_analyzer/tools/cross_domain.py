@@ -7,6 +7,17 @@ comprehensive cross-domain queries.
 
 from ..ue_client import get_client
 from ..cpp_analyzer import get_analyzer
+from ..ue_client.http_client import UEPluginError
+
+
+def _ue_error(tool: str, e: Exception) -> dict:
+    """Return a friendly, structured error for UE Plugin connectivity issues."""
+    return {
+        "ok": False,
+        "error": f"UE Plugin API 调用失败（{tool}）",
+        "detail": str(e),
+        "hint": "请确认 UE 编辑器已启动且启用了 UE5ProjectAnalyzer 插件，并检查 UE_PLUGIN_HOST/UE_PLUGIN_PORT 配置。",
+    }
 
 
 async def trace_reference_chain(
@@ -28,11 +39,14 @@ async def trace_reference_chain(
         - summary: Statistics about the chain
     """
     client = get_client()
-    return await client.get("/analysis/reference-chain", {
-        "start": start_asset,
-        "depth": max_depth,
-        "direction": direction,
-    })
+    try:
+        return await client.get("/analysis/reference-chain", {
+            "start": start_asset,
+            "depth": max_depth,
+            "direction": direction,
+        })
+    except UEPluginError as e:
+        return _ue_error("trace_reference_chain", e)
 
 
 async def find_cpp_class_usage(cpp_class: str) -> dict:
@@ -49,6 +63,9 @@ async def find_cpp_class_usage(cpp_class: str) -> dict:
         - as_function_call: Blueprints calling functions from this class
     """
     client = get_client()
-    return await client.get("/analysis/cpp-class-usage", {
-        "class": cpp_class,
-    })
+    try:
+        return await client.get("/analysis/cpp-class-usage", {
+            "class": cpp_class,
+        })
+    except UEPluginError as e:
+        return _ue_error("find_cpp_class_usage", e)

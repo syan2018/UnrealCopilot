@@ -7,6 +7,8 @@
 #include "IPythonScriptPlugin.h"
 #include "Misc/Paths.h"
 
+#include "UE5AnalyzerHttpRoutes.h"
+
 #define LOCTEXT_NAMESPACE "FUE5ProjectAnalyzerModule"
 
 void FUE5ProjectAnalyzerModule::StartupModule()
@@ -98,10 +100,12 @@ void FUE5ProjectAnalyzerModule::InitializePythonBridge()
     
     // Execute the bridge script
     // Note: In production, we'd want more robust error handling
-    FString PythonCommand = FString::Printf(TEXT("exec(open('%s').read())"), *BridgeScriptPath);
+    // Windows paths contain backslashes; escape them for Python string literal.
+    BridgeScriptPath.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
+    FString PythonCommand = FString::Printf(TEXT("exec(open(r'%s').read())"), *BridgeScriptPath);
     
-    // TODO: Actually execute the Python script
-    // PythonPlugin->ExecPythonCommand(*PythonCommand);
+    // Execute the Python script (best-effort)
+    PythonPlugin->ExecPythonCommand(*PythonCommand);
     
     bPythonBridgeInitialized = true;
     UE_LOG(LogTemp, Log, TEXT("UE5ProjectAnalyzer: Python bridge initialized."));
@@ -137,18 +141,11 @@ void FUE5ProjectAnalyzerModule::RegisterRoutes(TSharedPtr<IHttpRouter> Router)
             return true;
         }
     );
-    
-    // TODO: Register Blueprint routes
-    // Router->BindRoute(FHttpPath(TEXT("/blueprint/search")), ...);
-    // Router->BindRoute(FHttpPath(TEXT("/blueprint/:path/hierarchy")), ...);
-    // Router->BindRoute(FHttpPath(TEXT("/blueprint/:path/dependencies")), ...);
-    
-    // TODO: Register Asset routes
-    // Router->BindRoute(FHttpPath(TEXT("/asset/search")), ...);
-    // Router->BindRoute(FHttpPath(TEXT("/asset/:path/referencers")), ...);
-    
-    // TODO: Register Analysis routes
-    // Router->BindRoute(FHttpPath(TEXT("/analysis/reference-chain")), ...);
+
+    // Register analyzer API routes.
+    // NOTE: For any parameter that contains "/Game/...", we use query params (e.g. ?bp_path=...),
+    // to avoid router path-segment matching issues.
+    UE5AnalyzerHttpRoutes::Register(Router);
     
     UE_LOG(LogTemp, Log, TEXT("UE5ProjectAnalyzer: Routes registered."));
 }

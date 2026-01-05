@@ -67,6 +67,19 @@ uv run ue5-analyzer -- \
   --ue-plugin-port 8080
 ```
 
+### Run as HTTP MCP Server (optional)
+
+默认 `ue5-analyzer` 以 **stdio** 方式运行（适配 Cursor 的 MCP 集成）。
+如果你希望把 MCP Server 作为一个本机 HTTP 服务暴露（便于“快捷连接”或调试），可以使用：
+
+```bash
+uv run ue5-analyzer -- \
+  --transport http \
+  --mcp-host 127.0.0.1 \
+  --mcp-port 8000 \
+  --mcp-path /mcp
+```
+
 ### UE5 Plugin Setup
 
 1. Copy `unreal-plugin/` folder to your UE5 project's `Plugins/` directory

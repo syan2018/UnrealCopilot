@@ -303,20 +303,20 @@ ue5-project-analyzer/
 
 ```
 GET  /blueprint/search?pattern=xxx&class=xxx
-GET  /blueprint/{path}/hierarchy
-GET  /blueprint/{path}/dependencies
-GET  /blueprint/{path}/referencers
-GET  /blueprint/{path}/graph/{graph_name}
-GET  /blueprint/{path}/details
+GET  /blueprint/hierarchy?bp_path=/Game/...
+GET  /blueprint/dependencies?bp_path=/Game/...
+GET  /blueprint/referencers?bp_path=/Game/...
+GET  /blueprint/graph?bp_path=/Game/...&graph_name=EventGraph
+GET  /blueprint/details?bp_path=/Game/...
 ```
 
 ### 5.2 Asset API
 
 ```
 GET  /asset/search?pattern=xxx&type=xxx
-GET  /asset/{path}/references
-GET  /asset/{path}/referencers  
-GET  /asset/{path}/metadata
+GET  /asset/references?asset_path=/Game/...
+GET  /asset/referencers?asset_path=/Game/...
+GET  /asset/metadata?asset_path=/Game/...
 ```
 
 ### 5.3 Analysis API
@@ -325,6 +325,9 @@ GET  /asset/{path}/metadata
 GET  /analysis/reference-chain?start=xxx&depth=xxx
 GET  /analysis/cpp-class-usage?class=xxx
 ```
+
+> 说明：`/Game/...` 这类路径包含大量 `/`，在 UE `HttpServer` 的路由匹配中不适合直接作为 path segment，
+> 因此统一采用 query 参数（`bp_path` / `asset_path`）传递，避免编码/分段导致的匹配失败。
 
 ---
 
@@ -506,11 +509,11 @@ P1 - C++ 源码分析器 (Week 2)
 P2 - UE5 插件核心 (Week 3)
 ├── Blueprint 内省 API
 │   ├── /blueprint/search
-│   ├── /blueprint/{path}/hierarchy
-│   └── /blueprint/{path}/dependencies
+│   ├── /blueprint/hierarchy?bp_path=...
+│   └── /blueprint/dependencies?bp_path=...
 ├── Asset 引用 API
 │   ├── /asset/search
-│   └── /asset/{path}/referencers
+│   └── /asset/referencers?asset_path=...
 └── Python Bridge 集成 (C++ 启动时拉起)
 
 P3 - 整合验证 (Week 4)

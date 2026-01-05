@@ -31,20 +31,20 @@ unreal-plugin/
 
 ```
 GET /blueprint/search?pattern=xxx&class=xxx
-GET /blueprint/{path}/hierarchy
-GET /blueprint/{path}/dependencies
-GET /blueprint/{path}/referencers
-GET /blueprint/{path}/graph/{graph_name}
-GET /blueprint/{path}/details
+GET /blueprint/hierarchy?bp_path=/Game/...
+GET /blueprint/dependencies?bp_path=/Game/...
+GET /blueprint/referencers?bp_path=/Game/...
+GET /blueprint/graph?bp_path=/Game/...&graph_name=EventGraph
+GET /blueprint/details?bp_path=/Game/...
 ```
 
 ### Asset API
 
 ```
 GET /asset/search?pattern=xxx&type=xxx
-GET /asset/{path}/references
-GET /asset/{path}/referencers
-GET /asset/{path}/metadata
+GET /asset/references?asset_path=/Game/...
+GET /asset/referencers?asset_path=/Game/...
+GET /asset/metadata?asset_path=/Game/...
 ```
 
 ### Analysis API
@@ -107,3 +107,8 @@ PythonPlugin->ExecPythonCommand(*PythonCommand);
 - `UnrealEd`, `BlueprintGraph`, `Kismet` - 蓝图 API
 - `AssetRegistry` - 资产引用 API
 - `PythonScriptPlugin` - Python 集成
+
+## 路由参数约定（重要）
+
+- **含 `/Game/...` 的资产/蓝图路径必须使用 query 参数传递**（例如 `bp_path=/Game/...`、`asset_path=/Game/...`）
+- **不要**把 `/Game/...` 直接拼进 URL path（如 `/blueprint/{path}/hierarchy`），因为 UE `HttpServer` 的路由匹配会按 `/` 分段，容易导致无法匹配或编码/解码异常。

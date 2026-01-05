@@ -231,6 +231,37 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="打印最终配置并退出（用于排查环境变量/参数覆盖）",
     )
 
+    # --------------------------------------------------------------------
+    # FastMCP transport options
+    #
+    # Background:
+    # - Cursor MCP integration commonly uses stdio (default)
+    # - For "quick connect" from other clients, FastMCP supports HTTP/SSE
+    # - We keep stdio as default, and optionally allow http/sse
+    # --------------------------------------------------------------------
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http", "sse"],
+        default="stdio",
+        help="MCP 传输方式：stdio（默认，适配 Cursor）/ http（Streamable HTTP）/ sse",
+    )
+    parser.add_argument(
+        "--mcp-host",
+        default="127.0.0.1",
+        help="当 transport=http/sse 时，HTTP 服务监听 Host（默认 127.0.0.1）",
+    )
+    parser.add_argument(
+        "--mcp-port",
+        type=int,
+        default=8000,
+        help="当 transport=http/sse 时，HTTP 服务监听 Port（默认 8000）",
+    )
+    parser.add_argument(
+        "--mcp-path",
+        default="/mcp",
+        help="当 transport=http 时，HTTP 路由前缀 Path（默认 /mcp）",
+    )
+
     return parser
 
 
@@ -275,8 +306,23 @@ def main():
             initialize_from_environment()
         except Exception as e:
             print(f"[UE5 Analyzer] Initialization error: {e}")
-    
-    mcp.run()
+
+    # Run server with selected transport.
+    #
+    # NOTE:
+    # - stdio is the default and is the common choice for Cursor MCP.
+    # - http/sse is helpful when you want to host the MCP server as a local web service
+    #   (e.g. when launched from UE Editor with a "Start MCP" button).
+    if args.transport == "stdio":
+        mcp.run()
+        return
+
+    if args.transport == "http":
+        mcp.run(transport="http", host=args.mcp_host, port=args.mcp_port, path=args.mcp_path)
+        return
+
+    # sse
+    mcp.run(transport="sse", host=args.mcp_host, port=args.mcp_port)
 
 
 if __name__ == "__main__":
