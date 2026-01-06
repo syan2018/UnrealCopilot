@@ -6,126 +6,116 @@ description: "MCP 工具设计原则和完整工具清单"
 
 ## 设计原则
 
-1. **工具粒度适中** - 每个工具做一件事，但返回足够的上下文
-2. **返回结构化数据** - 使用 dict 返回，包含 `count`、`summary` 等元信息
-3. **清晰的文档字符串** - docstring 会显示给 AI，写清楚用途和返回格式
-4. **错误信息友好** - 返回有意义的错误信息，不要只抛异常
+**最小困惑度，最大能力覆盖。**
 
-## 完整工具清单
+1. 用最少的工具达成最完整的能力
+2. 统一接口优于分散工具
+3. 返回结构化数据，包含足够上下文
+4. 错误信息友好，帮助用户定位问题
 
-### Blueprint 工具组 (6 个)
+## 工具清单（v0.3.0，共 9 个）
 
-| 工具 | 用途 | 调用方 |
-|------|------|--------|
-| `search_blueprints` | 按名称/类型搜索蓝图 | UE Plugin |
-| `get_blueprint_hierarchy` | 获取类继承链 | UE Plugin |
-| `get_blueprint_dependencies` | 获取蓝图依赖 | UE Plugin |
-| `get_blueprint_referencers` | 获取蓝图引用者 | UE Plugin |
-| `get_blueprint_graph` | 获取节点图 | UE Plugin |
-| `get_blueprint_details` | 获取综合信息 | UE Plugin |
+### 核心工具（4 个）
 
-### Asset 工具组 (4 个)
+| 工具 | 用途 | 参数 |
+|------|------|------|
+| `search` | 统一搜索 C++/Blueprint/Asset | domain, scope, query |
+| `get_hierarchy` | 获取继承层次 | name, domain, scope |
+| `get_references` | 获取引用关系 | path, domain, direction |
+| `get_details` | 获取详细信息 | path, domain, scope |
 
-| 工具 | 用途 | 调用方 |
-|------|------|--------|
-| `search_assets` | 按名称/类型搜索资产 | UE Plugin |
-| `get_asset_references` | 获取资产引用 | UE Plugin |
-| `get_asset_referencers` | 获取资产引用者 | UE Plugin |
-| `get_asset_metadata` | 获取资产元数据 | UE Plugin |
+### 特殊工具（5 个）
 
-### C++ 分析工具组 (6 个)
+| 工具 | 用途 | 为什么需要 |
+|------|------|------------|
+| `get_blueprint_graph` | 获取蓝图节点图 | 需要图结构返回 |
+| `detect_ue_patterns` | 检测 UE 模式 | UPROPERTY/UFUNCTION 分析 |
+| `get_cpp_blueprint_exposure` | 获取 C++ 暴露 API | 专门的 C++→BP 接口分析 |
+| `trace_reference_chain` | 跨域引用链追踪 | 递归深度遍历 |
+| `find_cpp_class_usage` | C++ 类使用查找 | BP 中的 C++ 类使用 |
 
-| 工具 | 用途 | 调用方 |
-|------|------|--------|
-| `analyze_cpp_class` | 分析类结构 | tree-sitter |
-| `get_cpp_class_hierarchy` | 获取继承层次 | tree-sitter |
-| `search_cpp_code` | 代码搜索 | tree-sitter |
-| `find_cpp_references` | 查找代码引用 | tree-sitter |
-| `detect_ue_patterns` | 检测 UE 模式 | 正则 + tree-sitter |
-| `get_cpp_blueprint_exposure` | 获取蓝图暴露 API | 正则 |
+## 三层搜索模型
 
-### 跨域工具组 (2 个)
-
-| 工具 | 用途 | 调用方 |
-|------|------|--------|
-| `trace_reference_chain` | 追踪引用链 | UE Plugin |
-| `find_cpp_class_usage` | 查找 C++ 类使用 | UE Plugin |
-
-## 工具实现模板
-
-```python
-# Mcp/src/unreal_analyzer/tools/xxx.py
-
-async def tool_name(
-    required_param: str,
-    optional_param: str = "default"
-) -> dict:
-    """一句话描述工具用途。
-    
-    详细说明（可选）。
-    
-    Args:
-        required_param: 参数说明
-        optional_param: 参数说明（带默认值）
-    
-    Returns:
-        Dictionary containing:
-        - key1: 说明
-        - key2: 说明
-        - count: 结果数量
-    
-    Example:
-        >>> result = await tool_name("value")
-        >>> result["key1"]
-        "expected"
-    """
-    # 获取后端客户端
-    client = get_client()  # 或 get_analyzer()
-    
-    # 调用后端
-    result = await client.get("/endpoint", {"param": required_param})
-    
-    # 返回结构化结果
-    return {
-        "key1": result.get("data"),
-        "count": len(result.get("items", [])),
-    }
+```
+scope 参数：
+├── "project"  → 只搜索项目源码（默认，快）
+├── "engine"   → 只搜索引擎源码
+└── "all"      → 搜索所有（慢但全面）
 ```
 
-## 典型 Agent 调用流程
+## 典型调用流程
 
 ### 场景：分析 GAS Ability
 
-```
-1. search_blueprints("GA_Hero_Dash", "GameplayAbility")
-   → 找到蓝图路径
+```python
+# 1. 搜索蓝图
+await search(query="GA_Hero_Dash", domain="blueprint")
 
-2. get_blueprint_hierarchy("/Game/.../GA_Hero_Dash")
-   → 获取继承链，发现父类 UGameplayAbility
+# 2. 获取继承层次
+await get_hierarchy(name="/Game/.../GA_Hero_Dash", domain="blueprint")
 
-3. get_blueprint_dependencies("/Game/.../GA_Hero_Dash")
-   → 获取依赖的 C++ 类和其他蓝图
+# 3. 获取依赖
+await get_references(path="/Game/.../GA_Hero_Dash", domain="blueprint", direction="outgoing")
 
-4. analyze_cpp_class("UGameplayAbility")
-   → 分析 C++ 父类结构
+# 4. 分析 C++ 父类
+await get_details(path="UGameplayAbility", domain="cpp", scope="engine")
 
-5. get_blueprint_graph("/Game/.../GA_Hero_Dash", "EventGraph")
-   → 获取执行逻辑
-
-6. Agent 综合以上信息，输出分析报告
+# 5. 获取节点图（需要专门工具）
+await get_blueprint_graph(bp_path="/Game/.../GA_Hero_Dash", graph_name="EventGraph")
 ```
 
 ### 场景：追踪资产引用
 
+```python
+# 1. 搜索资产
+await search(query="SK_Mannequin", domain="asset")
+
+# 2. 获取引用者
+await get_references(path="/Game/.../SK_Mannequin", domain="asset", direction="incoming")
+
+# 3. 深度追踪
+await trace_reference_chain(start_asset="/Game/.../SK_Mannequin", max_depth=2)
 ```
-1. search_assets("SK_Mannequin", "Skeleton")
-   → 找到资产路径
 
-2. get_asset_referencers("/Game/.../SK_Mannequin")
-   → 获取直接引用者
+### 场景：分析 C++ 类暴露
 
-3. trace_reference_chain("/Game/.../SK_Mannequin", depth=2)
-   → 获取完整引用树
+```python
+# 1. 检测 UE 模式
+await detect_ue_patterns(file_path="Source/MyGame/MyActor.h")
 
-4. Agent 输出引用关系报告
+# 2. 获取 Blueprint 暴露汇总
+await get_cpp_blueprint_exposure(file_path="Source/MyGame/MyActor.h")
 ```
+
+## HTTP API（UE 插件）
+
+```
+GET /health                           → 健康检查
+GET /blueprint/graph?bp_path=...      → 蓝图节点图
+GET /analysis/reference-chain?...     → 引用链追踪
+GET /analysis/cpp-class-usage?...     → C++ 类使用
+GET /analysis/job/status?id=...       → 异步任务状态
+GET /analysis/job/result?id=...       → 异步任务结果
+```
+
+## 与 v0.2.0 对比
+
+| 版本 | 工具数 | 变化 |
+|------|--------|------|
+| v0.2.0 | 22 | 原始工具 + unified |
+| v0.3.0 | 9 | 仅保留 unified + 必要特殊工具 |
+
+删除的工具（被 unified 替代）：
+- `search_blueprints` → `search(domain="blueprint")`
+- `search_assets` → `search(domain="asset")`
+- `search_cpp_code` → `search(domain="cpp")`
+- `get_blueprint_hierarchy` → `get_hierarchy(domain="blueprint")`
+- `get_cpp_class_hierarchy` → `get_hierarchy(domain="cpp")`
+- `get_blueprint_dependencies` → `get_references(direction="outgoing")`
+- `get_blueprint_referencers` → `get_references(direction="incoming")`
+- `get_asset_references` → `get_references(direction="outgoing")`
+- `get_asset_referencers` → `get_references(direction="incoming")`
+- `find_cpp_references` → `get_references(domain="cpp")`
+- `get_blueprint_details` → `get_details(domain="blueprint")`
+- `get_asset_metadata` → `get_details(domain="asset")`
+- `analyze_cpp_class` → `get_details(domain="cpp")`

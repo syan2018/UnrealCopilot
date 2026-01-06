@@ -15,17 +15,17 @@ def _ue_error(tool: str, e: Exception) -> dict:
         "ok": False,
         "error": f"UE Plugin API 调用失败（{tool}）",
         "detail": str(e),
-        "hint": "请确认 UE 编辑器已启动且启用了 UnrealProjectAnalyzer 插件，并检查 UE_PLUGIN_HOST/UE_PLUGIN_PORT 配置。",
+        "hint": "请确认 UE 编辑器已启动且启用了 UnrealProjectAnalyzer 插件。",
     }
 
 
 async def search_blueprints(name_pattern: str, class_filter: str = "") -> dict:
     """Search for blueprints by name pattern.
-    
+
     Args:
         name_pattern: Blueprint name or partial name (supports wildcards *)
         class_filter: Optional parent class filter (e.g., "Actor", "GameplayAbility")
-    
+
     Returns:
         Dictionary containing:
         - matches: List of matching blueprints with name and path
@@ -33,20 +33,23 @@ async def search_blueprints(name_pattern: str, class_filter: str = "") -> dict:
     """
     client = get_client()
     try:
-        return await client.get("/blueprint/search", {
-            "pattern": name_pattern,
-            "class": class_filter,
-        })
+        return await client.get(
+            "/blueprint/search",
+            {
+                "pattern": name_pattern,
+                "class": class_filter,
+            },
+        )
     except UEPluginError as e:
         return _ue_error("search_blueprints", e)
 
 
 async def get_blueprint_hierarchy(bp_path: str) -> dict:
     """Get the class inheritance hierarchy of a blueprint.
-    
+
     Args:
         bp_path: Blueprint asset path (e.g., "/Game/Blueprints/BP_Player")
-    
+
     Returns:
         Dictionary containing:
         - hierarchy: List of classes from blueprint to UObject
@@ -64,10 +67,10 @@ async def get_blueprint_hierarchy(bp_path: str) -> dict:
 
 async def get_blueprint_dependencies(bp_path: str) -> dict:
     """Get all dependencies of a blueprint.
-    
+
     Args:
         bp_path: Blueprint asset path
-    
+
     Returns:
         Dictionary containing:
         - dependencies: List of dependencies with class, module, and type
@@ -82,10 +85,10 @@ async def get_blueprint_dependencies(bp_path: str) -> dict:
 
 async def get_blueprint_referencers(bp_path: str) -> dict:
     """Get all assets that reference this blueprint.
-    
+
     Args:
         bp_path: Blueprint asset path
-    
+
     Returns:
         Dictionary containing:
         - referencers: List of referencing assets
@@ -100,13 +103,13 @@ async def get_blueprint_referencers(bp_path: str) -> dict:
 
 async def get_blueprint_graph(bp_path: str, graph_name: str = "EventGraph") -> dict:
     """Get the node graph of a blueprint.
-    
+
     Uses async job + chunked retrieval for large graphs to avoid socket_send_failure.
-    
+
     Args:
         bp_path: Blueprint asset path
         graph_name: Name of the graph (default: "EventGraph")
-    
+
     Returns:
         Dictionary containing:
         - nodes: List of nodes with id, type, and connections
@@ -126,10 +129,10 @@ async def get_blueprint_graph(bp_path: str, graph_name: str = "EventGraph") -> d
 
 async def get_blueprint_details(bp_path: str) -> dict:
     """Get comprehensive details of a blueprint.
-    
+
     Args:
         bp_path: Blueprint asset path
-    
+
     Returns:
         Dictionary containing:
         - variables: List of variables

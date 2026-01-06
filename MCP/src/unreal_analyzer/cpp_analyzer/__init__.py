@@ -11,20 +11,20 @@ Key Components:
 """
 
 from .analyzer import (
+    ClassHierarchy,
+    ClassInfo,
+    CodeReference,
     CppAnalyzer,
+    MethodInfo,
+    ParameterInfo,
+    PropertyInfo,
     get_analyzer,
     set_analyzer,
-    ClassInfo,
-    MethodInfo,
-    PropertyInfo,
-    ParameterInfo,
-    CodeReference,
-    ClassHierarchy,
 )
 from .patterns import (
-    UE_PATTERNS,
     BLUEPRINT_SPECIFIERS,
     REPLICATION_SPECIFIERS,
+    UE_PATTERNS,
     detect_ue_pattern,
     parse_specifiers,
 )

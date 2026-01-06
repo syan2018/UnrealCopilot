@@ -7,31 +7,42 @@ reference chain tracing across Blueprint ↔ C++ boundaries.
 Core capabilities:
 - Class structure analysis (methods, properties, inheritance)
 - Inheritance hierarchy discovery
-- Code search and reference finding  
+- Code search and reference finding
 - UE pattern detection (UPROPERTY, UFUNCTION, etc.)
 - Blueprint exposure analysis
+
+Supports three-layer search scope:
+- project: Project C++ source only (default)
+- engine: Unreal Engine source only
+- all: Both project and engine
 """
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
-import re
 
 import tree_sitter_cpp as tscpp
-from tree_sitter import Language, Parser, Query as TSQuery, QueryCursor
+from tree_sitter import Language, Parser, QueryCursor
+from tree_sitter import Query as TSQuery
 
-from ..config import get_config
+from ..config import SearchScope, get_config
+from .patterns import detect_ue_pattern, is_ue_macro_call
 from .queries import QUERY_PATTERNS
-from .patterns import detect_ue_pattern
+
+# Type alias for scope parameter
+ScopeType = SearchScope | Literal["project", "engine", "all"] | None
 
 
 # ============================================================================
 # Data Classes
 # ============================================================================
 
+
 @dataclass
 class ParameterInfo:
     """Information about a function parameter."""
+
     name: str
     type: str
     default_value: str | None = None
@@ -40,6 +51,7 @@ class ParameterInfo:
 @dataclass
 class MethodInfo:
     """Information about a class method."""
+
     name: str
     return_type: str
     parameters: list[ParameterInfo] = field(default_factory=list)
@@ -47,7 +59,7 @@ class MethodInfo:
     is_override: bool = False
     is_const: bool = False
     is_static: bool = False
-    visibility: Literal['public', 'protected', 'private'] = 'public'
+    visibility: Literal["public", "protected", "private"] = "public"
     comments: list[str] = field(default_factory=list)
     line: int = 0
 
@@ -55,10 +67,13 @@ class MethodInfo:
 @dataclass
 class PropertyInfo:
     """Information about a class property."""
+
     name: str
     type: str
-    visibility: Literal['public', 'protected', 'private'] = 'public'
+    visibility: Literal["public", "protected", "private"] = "public"
     is_static: bool = False
+    is_uproperty: bool = False  # Whether marked with UPROPERTY
+    uproperty_specifiers: list[str] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
     line: int = 0
 
@@ -66,6 +81,7 @@ class PropertyInfo:
 @dataclass
 class ClassInfo:
     """Information about a C++ class."""
+
     name: str
     file: str
     line: int
@@ -74,7 +90,9 @@ class ClassInfo:
     methods: list[MethodInfo] = field(default_factory=list)
     properties: list[PropertyInfo] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
-    
+    is_uclass: bool = False
+    uclass_specifiers: list[str] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -83,6 +101,8 @@ class ClassInfo:
             "line": self.line,
             "superclasses": self.superclasses,
             "interfaces": self.interfaces,
+            "is_uclass": self.is_uclass,
+            "uclass_specifiers": self.uclass_specifiers,
             "methods": [
                 {
                     "name": m.name,
@@ -106,6 +126,8 @@ class ClassInfo:
                     "type": p.type,
                     "visibility": p.visibility,
                     "is_static": p.is_static,
+                    "is_uproperty": p.is_uproperty,
+                    "uproperty_specifiers": p.uproperty_specifiers,
                     "line": p.line,
                 }
                 for p in self.properties
@@ -117,6 +139,7 @@ class ClassInfo:
 @dataclass
 class CodeReference:
     """A reference to code location."""
+
     file: str
     line: int
     column: int
@@ -126,10 +149,11 @@ class CodeReference:
 @dataclass
 class ClassHierarchy:
     """Class inheritance hierarchy."""
+
     class_name: str
-    superclasses: list['ClassHierarchy'] = field(default_factory=list)
+    superclasses: list["ClassHierarchy"] = field(default_factory=list)
     interfaces: list[str] = field(default_factory=list)
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -143,39 +167,45 @@ class ClassHierarchy:
 # Main Analyzer Class
 # ============================================================================
 
+
 class CppAnalyzer:
     """
     C++ source code analyzer using tree-sitter.
-    
+
     Focused on reference chain tracing capabilities:
     - Class structure analysis
     - Inheritance hierarchy discovery
     - Code reference finding
     - UE pattern detection (Blueprint exposure)
+
+    Supports scope-based searching:
+    - project: Search only project source
+    - engine: Search only engine source
+    - all: Search both
     """
-    
+
     def __init__(self):
         """Initialize the analyzer."""
         self._language = Language(tscpp.language())
         self._parser = Parser(self._language)
-        
+
         # Caches
         self._class_cache: dict[str, ClassInfo] = {}
         self._ast_cache: dict[str, Any] = {}
         self._query_cache: dict[str, TSQuery] = {}
-        
+
         # Cache management
         self._max_cache_size = 1000
         self._cache_queue: list[str] = []
-        
-        # Path configuration
+
+        # Path configuration (legacy, use config instead)
         self._unreal_path: str | None = None
         self._custom_path: str | None = None
         self._initialized: bool = False
-        
+
         # Pre-compile common queries
         self._init_queries()
-    
+
     def _init_queries(self) -> None:
         """Initialize commonly used queries."""
         for name, pattern in QUERY_PATTERNS.items():
@@ -184,85 +214,112 @@ class CppAnalyzer:
                 self._query_cache[name] = query
             except Exception as e:
                 print(f"Warning: Failed to compile query '{name}': {e}")
-    
+
     def _manage_cache(self, cache: dict, key: str, value: Any) -> None:
         """Manage cache size using FIFO eviction."""
         if len(cache) >= self._max_cache_size:
             if self._cache_queue:
                 oldest = self._cache_queue.pop(0)
                 cache.pop(oldest, None)
-        
+
         cache[key] = value
         self._cache_queue.append(key)
-    
+
     # ========================================================================
     # Initialization
     # ========================================================================
-    
+
     def is_initialized(self) -> bool:
         """Check if the analyzer is initialized with a source path."""
         return self._initialized
-    
+
     async def initialize(self, engine_path: str) -> None:
         """
         Initialize with Unreal Engine source path.
-        
+
         Args:
             engine_path: Path to Unreal Engine installation
         """
         path = Path(engine_path)
         if not path.exists():
             raise ValueError(f"Invalid path: Directory does not exist - {engine_path}")
-        
+
         self._unreal_path = str(path.resolve())
         self._initialized = True
-        
-        # Add to config
+
+        # Add to config as engine source
         config = get_config()
-        config.add_source_path(engine_path)
-    
+        config.add_source_path(engine_path, is_engine=True)
+
     async def initialize_custom_codebase(self, custom_path: str) -> None:
         """
         Initialize with a custom C++ codebase path.
-        
+
         Args:
             custom_path: Path to the C++ source directory
         """
         path = Path(custom_path)
         if not path.exists():
             raise ValueError(f"Invalid path: Directory does not exist - {custom_path}")
-        
+
         self._custom_path = str(path.resolve())
         self._initialized = True
-        
-        # Add to config
+
+        # Add to config as project source
         config = get_config()
-        config.add_source_path(custom_path)
-    
+        config.add_source_path(custom_path, is_engine=False)
+
+    def _get_search_paths(self, scope: ScopeType = None, source_path: str = "") -> list[str]:
+        """Get search paths based on scope.
+
+        Args:
+            scope: Search scope (project/engine/all). None uses config default.
+            source_path: Optional specific path to search (overrides scope).
+
+        Returns:
+            List of paths to search.
+        """
+        if source_path:
+            return [source_path]
+
+        config = get_config()
+        paths = config.get_source_paths(scope)
+
+        # Fallback to legacy paths if no scoped paths configured
+        if not paths:
+            if self._custom_path:
+                paths.append(self._custom_path)
+            if self._unreal_path:
+                paths.append(self._unreal_path)
+
+        return paths
+
     # ========================================================================
     # File Parsing
     # ========================================================================
-    
+
     async def _parse_file(self, file_path: str) -> Any:
         """Parse a C++ file and return the AST."""
         if file_path in self._ast_cache:
             return self._ast_cache[file_path]
-        
+
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
-        
+
         content = path.read_text(encoding="utf-8", errors="ignore")
         tree = self._parser.parse(bytes(content, "utf-8"))
-        
+
         self._manage_cache(self._ast_cache, file_path, tree)
-        
+
         # Also extract and cache classes from this file
-        await self._extract_classes_from_tree(tree, file_path)
-        
+        await self._extract_classes_from_tree(tree, file_path, content)
+
         return tree
-    
-    async def _extract_classes_from_tree(self, tree: Any, file_path: str) -> None:
+
+    async def _extract_classes_from_tree(
+        self, tree: Any, file_path: str, content: str = ""
+    ) -> None:
         """Extract and cache all classes from an AST."""
         query = self._query_cache.get("CLASS")
         if not query:
@@ -271,6 +328,13 @@ class CppAnalyzer:
         # py-tree-sitter >= 0.25: Query execution is done via QueryCursor
         cursor = QueryCursor(query)
         matches = cursor.matches(tree.root_node)
+
+        # Read content if not provided (for UPROPERTY detection)
+        if not content:
+            try:
+                content = Path(file_path).read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                content = ""
 
         for _, captured in matches:
             # captured: dict[str, list[Node]]
@@ -287,62 +351,146 @@ class CppAnalyzer:
             class_name = name_nodes[0].text.decode(errors="ignore")
             class_node = class_nodes[0]
 
-            class_info = self._extract_class_info(class_node, file_path, class_name)
+            class_info = self._extract_class_info(class_node, file_path, class_name, content)
             if class_info:
                 self._class_cache[class_name] = class_info
-    
+
     # ========================================================================
     # Class Analysis
     # ========================================================================
-    
-    def _extract_class_info(self, node: Any, file_path: str, class_name: str) -> ClassInfo | None:
+
+    def _extract_class_info(
+        self, node: Any, file_path: str, class_name: str, content: str = ""
+    ) -> ClassInfo | None:
         """Extract detailed class information from AST node."""
         class_info = ClassInfo(
             name=class_name,
             file=file_path,
             line=node.start_point[0] + 1,
         )
-        
+
+        # Check for UCLASS macro
+        uclass_match = self._find_uclass_for_node(node, content)
+        if uclass_match:
+            class_info.is_uclass = True
+            class_info.uclass_specifiers = uclass_match.get("specifiers", [])
+
         # Extract base classes / interfaces (multiple inheritance)
         base_types = self._extract_base_types(node)
-        class_info.superclasses = [b for b in base_types if not b.startswith("I")]
-        class_info.interfaces = [b for b in base_types if b.startswith("I")]
-        
+        # Improved interface detection: check for 'I' prefix and common interface patterns
+        class_info.superclasses = []
+        class_info.interfaces = []
+        for base in base_types:
+            if self._is_interface_name(base):
+                class_info.interfaces.append(base)
+            else:
+                class_info.superclasses.append(base)
+
         # Find the class body (field_declaration_list)
         body_node = None
         for child in node.children:
             if child.type == "field_declaration_list":
                 body_node = child
                 break
-        
+
         if body_node:
+            # Build a map of UPROPERTY/UFUNCTION declarations by line
+            ue_macros_by_line = self._build_ue_macro_map(content) if content else {}
+
             # Extract methods and properties
             current_visibility = "private"  # Default for classes
-            
+
             for child in body_node.children:
                 # Check for access specifier
                 if child.type == "access_specifier":
                     specifier_text = child.text.decode().strip().rstrip(":")
                     if specifier_text in ("public", "protected", "private"):
                         current_visibility = specifier_text
-                
-                # Extract function declarations/definitions
-                elif child.type in ("function_definition", "declaration"):
-                    method_info = self._extract_method_info(child, current_visibility)
-                    if method_info:
-                        class_info.methods.append(method_info)
-                
+
+                # Skip UE macro calls (UPROPERTY, UFUNCTION, etc.) - they're not methods
+                if child.type in ("function_definition", "declaration"):
+                    child_text = child.text.decode() if child.text else ""
+                    if not is_ue_macro_call(child_text):
+                        method_info = self._extract_method_info(child, current_visibility)
+                        if method_info:
+                            class_info.methods.append(method_info)
+
                 # Extract field declarations
                 elif child.type == "field_declaration":
-                    prop_info = self._extract_property_info(child, current_visibility)
+                    prop_info = self._extract_property_info(
+                        child, current_visibility, ue_macros_by_line
+                    )
                     if prop_info:
                         class_info.properties.append(prop_info)
-        
+
         # Extract preceding comments
         class_info.comments = self._extract_comments(node)
-        
+
         return class_info
-    
+
+    def _is_interface_name(self, name: str) -> bool:
+        """Check if a class name is likely an interface.
+
+        UE interfaces typically:
+        - Start with 'I' followed by uppercase letter
+        - End with 'Interface'
+        """
+        if not name:
+            return False
+        # Starts with I followed by uppercase (INavAgentInterface, IAbilitySystemInterface)
+        if len(name) >= 2 and name[0] == "I" and name[1].isupper():
+            return True
+        # Ends with Interface
+        if name.endswith("Interface"):
+            return True
+        return False
+
+    def _find_uclass_for_node(self, class_node: Any, content: str) -> dict | None:
+        """Find UCLASS macro that precedes this class node."""
+        if not content:
+            return None
+
+        line_num = class_node.start_point[0]
+        lines = content.split("\n")
+
+        # Look backwards from class definition for UCLASS
+        for i in range(line_num - 1, max(0, line_num - 10), -1):
+            if i >= len(lines):
+                continue
+            line = lines[i]
+            if "UCLASS" in line:
+                # Extract specifiers
+                match = re.search(r"UCLASS\s*\(([^)]*)\)", line)
+                if match:
+                    from .patterns import parse_specifiers
+
+                    specifiers = parse_specifiers(match.group(1))
+                    return {"specifiers": specifiers}
+                return {"specifiers": []}
+
+        return None
+
+    def _build_ue_macro_map(self, content: str) -> dict[int, dict]:
+        """Build a map of UE macros (UPROPERTY, UFUNCTION) by line number."""
+        macro_map = {}
+        lines = content.split("\n")
+
+        for i, line in enumerate(lines):
+            for macro in ["UPROPERTY", "UFUNCTION"]:
+                if macro in line:
+                    match = re.search(rf"{macro}\s*\(([^)]*)\)", line)
+                    if match:
+                        from .patterns import parse_specifiers
+
+                        specifiers = parse_specifiers(match.group(1))
+                        macro_map[i + 1] = {"macro": macro, "specifiers": specifiers}
+                        macro_map[i + 2] = {
+                            "macro": macro,
+                            "specifiers": specifiers,
+                        }  # Next line too
+
+        return macro_map
+
     def _extract_base_types(self, class_node: Any) -> list[str]:
         """
         Extract base types from a class node.
@@ -366,7 +514,10 @@ class CppAnalyzer:
                 text = child.text.decode(errors="ignore").strip()
                 if not text:
                     continue
-                bases.append(text.split("::")[-1])
+                # Handle qualified names like "public INavAgentInterface"
+                base_name = text.split("::")[-1]
+                if base_name and base_name not in ("public", "protected", "private"):
+                    bases.append(base_name)
 
         return bases
 
@@ -384,7 +535,7 @@ class CppAnalyzer:
             children = getattr(cur, "children", None)
             if children:
                 stack.extend(children)
-    
+
     def _extract_method_info(self, node: Any, visibility: str) -> MethodInfo | None:
         """Extract method information from a function node."""
         # Find the function declarator
@@ -393,17 +544,17 @@ class CppAnalyzer:
             if child.type == "function_declarator":
                 declarator = child
                 break
-        
+
         if not declarator:
             return None
-        
+
         method_info = MethodInfo(
             name="",
             return_type="",
             visibility=visibility,
             line=node.start_point[0] + 1,
         )
-        
+
         # Extract method name
         for child in declarator.children:
             if child.type == "identifier":
@@ -415,10 +566,23 @@ class CppAnalyzer:
             elif child.type == "destructor_name":
                 method_info.name = child.text.decode()
                 break
-        
+
         if not method_info.name:
             return None
-        
+
+        # Filter out UE macro names that look like methods
+        if method_info.name in (
+            "UPROPERTY",
+            "UFUNCTION",
+            "UCLASS",
+            "USTRUCT",
+            "UENUM",
+            "GENERATED_BODY",
+            "GENERATED_UCLASS_BODY",
+            "GENERATED_USTRUCT_BODY",
+        ):
+            return None
+
         # Extract modifiers from node text
         node_text = node.text.decode()
         if "virtual" in node_text:
@@ -429,39 +593,39 @@ class CppAnalyzer:
             method_info.is_static = True
         if node_text.rstrip().endswith("const"):
             method_info.is_const = True
-        
+
         # Try to extract return type
         for child in node.children:
             if child.type in ("type_identifier", "primitive_type", "qualified_identifier"):
                 method_info.return_type = child.text.decode()
                 break
-        
+
         # Extract parameters
         for child in declarator.children:
             if child.type == "parameter_list":
                 method_info.parameters = self._extract_parameters(child)
                 break
-        
+
         return method_info
-    
+
     def _extract_parameters(self, param_list: Any) -> list[ParameterInfo]:
         """Extract parameter information from a parameter list."""
         params = []
-        
+
         for child in param_list.children:
             if child.type == "parameter_declaration":
                 param = self._extract_single_parameter(child)
                 if param:
                     params.append(param)
-        
+
         return params
-    
+
     def _extract_single_parameter(self, param_node: Any) -> ParameterInfo | None:
         """Extract a single parameter's information."""
         param_type = ""
         param_name = ""
         default_value = None
-        
+
         for child in param_node.children:
             if child.type in ("type_identifier", "primitive_type", "qualified_identifier"):
                 param_type = child.text.decode()
@@ -479,7 +643,7 @@ class CppAnalyzer:
                 param_type += "&"
             elif child.type == "optional_parameter_declaration":
                 default_value = child.text.decode().split("=")[-1].strip()
-        
+
         if param_type or param_name:
             return ParameterInfo(
                 name=param_name or "unnamed",
@@ -487,19 +651,26 @@ class CppAnalyzer:
                 default_value=default_value,
             )
         return None
-    
-    def _extract_property_info(self, node: Any, visibility: str) -> PropertyInfo | None:
+
+    def _extract_property_info(
+        self, node: Any, visibility: str, ue_macros_by_line: dict[int, dict] | None = None
+    ) -> PropertyInfo | None:
         """Extract property information from a field declaration."""
         prop_type = ""
         prop_name = ""
         is_static = False
-        
+
         node_text = node.text.decode()
         if "static" in node_text:
             is_static = True
-        
+
         for child in node.children:
-            if child.type in ("type_identifier", "primitive_type", "qualified_identifier", "template_type"):
+            if child.type in (
+                "type_identifier",
+                "primitive_type",
+                "qualified_identifier",
+                "template_type",
+            ):
                 prop_type = child.text.decode()
             elif child.type in ("identifier", "field_identifier"):
                 prop_name = child.text.decode()
@@ -508,17 +679,30 @@ class CppAnalyzer:
                     if subchild.type in ("identifier", "field_identifier"):
                         prop_name = subchild.text.decode()
                 prop_type += "*"
-        
+
         if prop_name:
+            # Check for UPROPERTY
+            line_num = node.start_point[0] + 1
+            is_uproperty = False
+            uproperty_specifiers = []
+
+            if ue_macros_by_line:
+                macro_info = ue_macros_by_line.get(line_num) or ue_macros_by_line.get(line_num - 1)
+                if macro_info and macro_info.get("macro") == "UPROPERTY":
+                    is_uproperty = True
+                    uproperty_specifiers = macro_info.get("specifiers", [])
+
             return PropertyInfo(
                 name=prop_name,
                 type=prop_type or "unknown",
                 visibility=visibility,
                 is_static=is_static,
-                line=node.start_point[0] + 1,
+                is_uproperty=is_uproperty,
+                uproperty_specifiers=uproperty_specifiers,
+                line=line_num,
             )
         return None
-    
+
     def _extract_comments(self, node: Any) -> list[str]:
         """Extract comments preceding a node."""
         comments = []
@@ -528,42 +712,42 @@ class CppAnalyzer:
             comments.insert(0, comment_text)
             prev = prev.prev_sibling
         return comments
-    
+
     # ========================================================================
     # Public API - Class Analysis
     # ========================================================================
-    
-    async def analyze_class(self, class_name: str, source_path: str = "") -> dict:
+
+    async def analyze_class(
+        self, class_name: str, source_path: str = "", scope: ScopeType = None
+    ) -> dict:
         """
         Analyze a C++ class structure.
-        
+
         Args:
             class_name: Name of the class to analyze
             source_path: Optional specific directory to search
-        
+            scope: Search scope (project/engine/all). Default: project only.
+
         Returns:
             Dictionary containing class information
         """
         # Check cache first
         if class_name in self._class_cache:
             return self._class_cache[class_name].to_dict()
-        
-        # Determine search paths
-        config = get_config()
-        if source_path:
-            search_paths = [source_path]
-        elif config.cpp_source_paths:
-            search_paths = config.cpp_source_paths
-        elif self._custom_path:
-            search_paths = [self._custom_path]
-        elif self._unreal_path:
-            search_paths = [self._unreal_path]
-        else:
-            raise ValueError("No C++ source paths configured. Set CPP_SOURCE_PATH environment variable.")
-        
+
+        # Get search paths based on scope
+        search_paths = self._get_search_paths(scope, source_path)
+
+        if not search_paths:
+            raise ValueError(
+                "No C++ source paths configured. Set CPP_SOURCE_PATH environment variable."
+            )
+
         # Search for the class
         for base_path in search_paths:
             base = Path(base_path)
+            if not base.exists():
+                continue
             for pattern in ["**/*.h", "**/*.cpp"]:
                 for file_path in base.rglob(pattern.replace("**/", "")):
                     try:
@@ -572,34 +756,39 @@ class CppAnalyzer:
                             return self._class_cache[class_name].to_dict()
                     except Exception:
                         continue
-        
+
         raise ValueError(f"Class not found: {class_name}")
-    
-    async def find_class_hierarchy(self, class_name: str, include_interfaces: bool = True) -> dict:
+
+    async def find_class_hierarchy(
+        self, class_name: str, include_interfaces: bool = True, scope: ScopeType = None
+    ) -> dict:
         """
         Get the inheritance hierarchy of a class.
-        
+
         Args:
             class_name: Name of the class
             include_interfaces: Whether to include implemented interfaces
-        
+            scope: Search scope (project/engine/all). Default: project only.
+
         Returns:
             Nested hierarchy dictionary
         """
         try:
-            class_info = await self.analyze_class(class_name)
+            class_info = await self.analyze_class(class_name, scope=scope)
         except ValueError:
             return ClassHierarchy(class_name=class_name).to_dict()
-        
+
         hierarchy = ClassHierarchy(
             class_name=class_name,
             interfaces=class_info.get("interfaces", []) if include_interfaces else [],
         )
-        
+
         # Recursively build superclass hierarchies
         for superclass in class_info.get("superclasses", []):
             try:
-                super_hierarchy_dict = await self.find_class_hierarchy(superclass, include_interfaces)
+                super_hierarchy_dict = await self.find_class_hierarchy(
+                    superclass, include_interfaces, scope=scope
+                )
                 super_hierarchy = ClassHierarchy(
                     class_name=super_hierarchy_dict["class"],
                     superclasses=[],
@@ -609,49 +798,103 @@ class CppAnalyzer:
                 for s in super_hierarchy_dict.get("superclasses", []):
                     if isinstance(s, dict):
                         super_hierarchy.superclasses.append(
-                            ClassHierarchy(class_name=s.get("class", ""), interfaces=s.get("interfaces", []))
+                            ClassHierarchy(
+                                class_name=s.get("class", ""), interfaces=s.get("interfaces", [])
+                            )
                         )
                 hierarchy.superclasses.append(super_hierarchy)
             except Exception:
                 hierarchy.superclasses.append(ClassHierarchy(class_name=superclass))
-        
+
         return hierarchy.to_dict()
-    
+
     # ========================================================================
     # Public API - Code Search
     # ========================================================================
-    
+
     async def search_code(
         self,
         query: str,
         file_pattern: str = "*.{h,cpp}",
-        include_comments: bool = True
+        include_comments: bool = True,
+        scope: ScopeType = None,
+        max_results: int = 500,
+        *,
+        query_mode: Literal["regex", "tokens", "smart"] = "regex",
     ) -> dict:
         """
         Search through C++ source code.
-        
+
         Args:
             query: Search query (supports regex)
-            file_pattern: File pattern to search
+            file_pattern: File pattern to search (default: "*.{h,cpp}")
             include_comments: Whether to include comment lines
-        
+            scope: Search scope (project/engine/all). Default: project only.
+            max_results: Maximum number of results to return (default: 500)
+
         Returns:
             Dictionary with matches and count
         """
-        config = get_config()
-        search_paths = config.cpp_source_paths or []
-        
-        if self._custom_path and self._custom_path not in search_paths:
-            search_paths.append(self._custom_path)
-        if self._unreal_path and self._unreal_path not in search_paths:
-            search_paths.append(self._unreal_path)
-        
+        search_paths = self._get_search_paths(scope)
+
         if not search_paths:
-            return {"matches": [], "count": 0}
-        
+            return {
+                "matches": [],
+                "count": 0,
+                "scope": str(scope or "project"),
+                "searched_paths": [],
+                "query_mode": query_mode,
+            }
+
         results = []
-        regex = re.compile(query, re.IGNORECASE)
-        
+        lowered_query = query.strip()
+
+        def _looks_like_regex(q: str) -> bool:
+            # Heuristic: treat as regex if it contains common regex meta chars.
+            regex_meta = set(r"\.^$*+?{}[]|()")
+            return any(ch in regex_meta for ch in q)
+
+        # Resolve smart mode.
+        if query_mode == "smart":
+            if not lowered_query:
+                query_mode_resolved: Literal["regex", "tokens"] = "tokens"
+            elif _looks_like_regex(lowered_query):
+                query_mode_resolved = "regex"
+            elif any(ch.isspace() for ch in lowered_query):
+                query_mode_resolved = "tokens"
+            else:
+                # Single token: treat as substring token search (more grep-like than regex).
+                query_mode_resolved = "tokens"
+        else:
+            query_mode_resolved = "tokens" if query_mode == "tokens" else "regex"
+
+        regex: re.Pattern[str] | None = None
+        tokens: list[str] = []
+
+        if query_mode_resolved == "regex":
+            try:
+                regex = re.compile(query, re.IGNORECASE)
+            except re.error as e:
+                return {
+                    "matches": [],
+                    "count": 0,
+                    "error": f"Invalid regex: {e}",
+                    "scope": str(scope or "project"),
+                    "searched_paths": search_paths,
+                    "query_mode": query_mode,
+                }
+        else:
+            # Token mode: split by whitespace, drop empties.
+            tokens = [t for t in re.split(r"\s+", lowered_query) if t]
+            if not tokens:
+                return {
+                    "matches": [],
+                    "count": 0,
+                    "scope": str(scope or "project"),
+                    "searched_paths": search_paths,
+                    "query_mode": query_mode,
+                }
+
         # Parse file patterns
         patterns = []
         if "{" in file_pattern:
@@ -660,88 +903,133 @@ class CppAnalyzer:
             patterns = [f"{base}{ext}" for ext in extensions]
         else:
             patterns = [file_pattern]
-        
+
         for base_path in search_paths:
             base = Path(base_path)
+            if not base.exists():
+                continue
             for pattern in patterns:
                 glob_pattern = pattern.replace("*", "")
                 for file_path in base.rglob(f"*{glob_pattern}"):
+                    if len(results) >= max_results:
+                        break
                     try:
                         content = file_path.read_text(encoding="utf-8", errors="ignore")
                         lines = content.split("\n")
-                        
+
                         for i, line in enumerate(lines):
+                            if len(results) >= max_results:
+                                break
                             if not include_comments:
                                 stripped = line.strip()
                                 if stripped.startswith("//") or stripped.startswith("/*"):
                                     continue
-                            
-                            if regex.search(line):
-                                context = "\n".join(lines[max(0, i-2):i+3])
-                                results.append({
-                                    "file": str(file_path),
-                                    "line": i + 1,
-                                    "column": line.find(query) + 1 if query in line else 1,
-                                    "context": context,
-                                })
+
+                            if query_mode_resolved == "regex":
+                                assert regex is not None
+                                if not regex.search(line):
+                                    continue
+                                context = "\n".join(lines[max(0, i - 2) : i + 3])
+                                results.append(
+                                    {
+                                        "file": str(file_path),
+                                        "line": i + 1,
+                                        "column": 1,
+                                        "context": context,
+                                        "score": 1,
+                                    }
+                                )
+                            else:
+                                lower_line = line.lower()
+                                matched = [t for t in tokens if t.lower() in lower_line]
+                                if not matched:
+                                    continue
+                                # Column: best effort - first matched token.
+                                first = matched[0]
+                                col = lower_line.find(first.lower())
+                                context = "\n".join(lines[max(0, i - 2) : i + 3])
+                                results.append(
+                                    {
+                                        "file": str(file_path),
+                                        "line": i + 1,
+                                        "column": (col + 1) if col >= 0 else 1,
+                                        "context": context,
+                                        "matched_terms": matched,
+                                        "score": len(matched),
+                                    }
+                                )
                     except Exception:
                         continue
-        
-        return {"matches": results, "count": len(results)}
-    
+
+        # In token mode, prefer higher-score matches first.
+        if query_mode_resolved == "tokens":
+            results.sort(key=lambda m: int(m.get("score", 0)), reverse=True)
+
+        return {
+            "matches": results,
+            "count": len(results),
+            "scope": str(scope or "project"),
+            "searched_paths": search_paths,
+            "truncated": len(results) >= max_results,
+            "query_mode": query_mode,
+            "query_mode_resolved": query_mode_resolved,
+        }
+
     async def find_references(
         self,
         identifier: str,
-        ref_type: Literal['class', 'function', 'variable'] | None = None
+        ref_type: Literal["class", "function", "variable"] | None = None,
+        scope: ScopeType = None,
     ) -> dict:
         """
         Find all references to an identifier.
-        
+
         Args:
             identifier: Name of the class, function, or variable
             ref_type: Optional type filter
-        
+            scope: Search scope (project/engine/all). Default: project only.
+
         Returns:
             Dictionary with references and count
         """
-        return await self.search_code(rf"\b{re.escape(identifier)}\b")
-    
+        return await self.search_code(rf"\b{re.escape(identifier)}\b", scope=scope)
+
     # ========================================================================
     # Public API - Pattern Detection
     # ========================================================================
-    
+
     async def detect_patterns(self, file_path: str) -> dict:
         """
         Detect Unreal Engine patterns in a file.
-        
+
         Args:
             file_path: Path to the C++ file
-        
+
         Returns:
             Dictionary with detected patterns
         """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
-        
+
         content = path.read_text(encoding="utf-8", errors="ignore")
         patterns = detect_ue_pattern(content, file_path)
-        
+
         return {"patterns": patterns, "file": file_path}
-    
+
     async def get_blueprint_exposure(self, file_path: str) -> dict:
         """
         Get all Blueprint-exposed API from a file.
-        
+
         Args:
             file_path: Path to the C++ header file
-        
+
         Returns:
             Dictionary containing Blueprint-exposed items
         """
         patterns_result = await self.detect_patterns(file_path)
         patterns = patterns_result.get("patterns", [])
-        
+
         exposure = {
             "file": file_path,
             "blueprint_callable_functions": [],
@@ -751,30 +1039,33 @@ class CppAnalyzer:
             "blueprint_writable_properties": [],
             "blueprintable_classes": [],
         }
-        
+
         for pattern in patterns:
             specifiers = pattern.get("specifiers", [])
             name = pattern.get("name", "")
             pattern_type = pattern.get("pattern_type", "")
-            
+
             if pattern_type == "UFUNCTION":
                 if "BlueprintCallable" in specifiers:
                     exposure["blueprint_callable_functions"].append(name)
                 if "BlueprintPure" in specifiers:
                     exposure["blueprint_pure_functions"].append(name)
-                if "BlueprintImplementableEvent" in specifiers or "BlueprintNativeEvent" in specifiers:
+                if (
+                    "BlueprintImplementableEvent" in specifiers
+                    or "BlueprintNativeEvent" in specifiers
+                ):
                     exposure["blueprint_events"].append(name)
-            
+
             elif pattern_type == "UPROPERTY":
                 if "BlueprintReadOnly" in specifiers or "BlueprintReadWrite" in specifiers:
                     exposure["blueprint_readable_properties"].append(name)
                 if "BlueprintReadWrite" in specifiers:
                     exposure["blueprint_writable_properties"].append(name)
-            
+
             elif pattern_type == "UCLASS":
                 if "Blueprintable" in specifiers:
                     exposure["blueprintable_classes"].append(name)
-        
+
         return exposure
 
 

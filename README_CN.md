@@ -15,6 +15,15 @@
 - **C++ 源码分析**：类结构、UPROPERTY/UFUNCTION 检测（基于 tree-sitter）
 - **跨域查询**：跨所有领域追踪完整引用链
 - **编辑器集成**：直接从 Unreal Editor 菜单启动/停止 MCP 服务器
+- **搜索范围控制 (v0.2.0)**：支持只搜索项目代码、引擎代码或全部
+- **统一搜索 (v0.2.0)**：类似 grep 的跨域统一搜索接口
+
+## v0.3.0 新特性
+
+- **最小工具集**：从 22 个精简到 **9 个工具**（4 核心 + 5 特殊）
+- **统一接口**：`search`、`get_hierarchy`、`get_references`、`get_details`
+- **三层搜索**：`scope` 参数支持 `project`/`engine`/`all`
+- **健康检查**：`/health` 端点验证 UE 插件状态
 
 ## 快速开始（推荐方式）
 
@@ -86,8 +95,10 @@ uv sync
 # 以 stdio 方式运行（用于 Cursor MCP 集成）
 uv run unreal-analyzer -- \
   --cpp-source-path "/path/to/YourProject/Source" \
+  --unreal-engine-path "/path/to/UE_5.3/Engine/Source" \
   --ue-plugin-host "localhost" \
-  --ue-plugin-port 8080
+  --ue-plugin-port 8080 \
+  --default-scope project
 
 # 或以 HTTP 服务器方式运行（便于快速连接）
 uv run unreal-analyzer -- \
@@ -109,6 +120,7 @@ uv run unreal-analyzer -- \
 │                  MCP Server (Python/FastMCP)                     │
 │  ┌────────────────────────────────────────────────────────────┐  │
 │  │            C++ 源码分析器 (tree-sitter)                     │  │
+│  │            支持: project / engine / all                     │  │
 │  └────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────┬─────────────────────────────────┘
                                  │ HTTP
@@ -118,45 +130,53 @@ uv run unreal-analyzer -- \
 │  ┌─────────────────────────┐  ┌────────────────────────────────┐ │
 │  │   HTTP Server (:8080)   │  │   MCP 启动器 (uv 进程)          │ │
 │  │   蓝图/资产 API          │  │   从 Editor 自动启动            │ │
+│  │   /health 健康检查       │  │                                │ │
 │  └─────────────────────────┘  └────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-## 可用工具
+## 搜索范围 (v0.2.0)
 
-### 蓝图工具
+所有 C++ 分析工具都支持 `scope` 参数：
+
+| 范围 | 描述 | 使用场景 |
+|------|------|----------|
+| `project` | 只搜索项目源码（默认） | 快速、聚焦的搜索 |
+| `engine` | 只搜索引擎源码 | 理解 UE 内部实现 |
+| `all` | 搜索项目和引擎 | 全面分析 |
+
+示例：
+```python
+# 只搜索项目代码（快）
+await search_cpp_code("Health", scope="project")
+
+# 只搜索引擎代码
+await analyze_cpp_class("ACharacter", scope="engine")
+
+# 搜索所有代码（较慢但全面）
+await find_cpp_references("UAbilitySystemComponent", scope="all")
+```
+
+## 可用工具（共 9 个）
+
+### 核心工具（4 个）
+
 | 工具 | 描述 |
 |------|------|
-| `search_blueprints` | 按名称模式和类过滤器搜索蓝图 |
-| `get_blueprint_hierarchy` | 获取类继承链 |
-| `get_blueprint_dependencies` | 获取所有依赖 |
-| `get_blueprint_referencers` | 获取所有引用者 |
-| `get_blueprint_graph` | 获取节点图（EventGraph、函数） |
-| `get_blueprint_details` | 获取变量、函数、组件详情 |
+| `search` | 统一搜索 C++/蓝图/资产 |
+| `get_hierarchy` | 获取继承层次（C++ 或蓝图） |
+| `get_references` | 获取引用关系（出/入方向） |
+| `get_details` | 获取详细信息（C++/蓝图/资产） |
 
-### 资产工具
-| 工具 | 描述 |
-|------|------|
-| `search_assets` | 按名称/类型搜索资产 |
-| `get_asset_references` | 获取引用的资产 |
-| `get_asset_referencers` | 获取引用此资产的资产 |
-| `get_asset_metadata` | 获取资产元数据 |
+### 特殊工具（5 个）
 
-### C++ 分析工具
-| 工具 | 描述 |
-|------|------|
-| `analyze_cpp_class` | 分析类结构（方法、属性） |
-| `get_cpp_class_hierarchy` | 获取继承层次 |
-| `search_cpp_code` | 使用正则表达式搜索源码 |
-| `find_cpp_references` | 查找标识符引用 |
-| `detect_ue_patterns` | 检测 UPROPERTY/UFUNCTION 模式 |
-| `get_cpp_blueprint_exposure` | 获取暴露给蓝图的 API |
-
-### 跨域工具
-| 工具 | 描述 |
-|------|------|
-| `trace_reference_chain` | 跨域追踪完整引用链 |
-| `find_cpp_class_usage` | 查找 C++ 类在蓝图中的使用 |
+| 工具 | 描述 | 为什么需要 |
+|------|------|------------|
+| `get_blueprint_graph` | 获取蓝图节点图 | 需要图结构返回 |
+| `detect_ue_patterns` | 检测 UPROPERTY/UFUNCTION | UE 宏分析 |
+| `get_cpp_blueprint_exposure` | 获取 C++ 暴露给蓝图的 API | C++→BP 接口汇总 |
+| `trace_reference_chain` | 跨域引用链追踪 | 递归深度遍历 |
+| `find_cpp_class_usage` | 查找 C++ 类使用 | BP 中的 C++ 类查找 |
 
 ## 插件设置
 
@@ -172,13 +192,32 @@ uv run unreal-analyzer -- \
 
 ## 使用示例
 
+### 使用统一搜索
+
+```python
+# 跨域搜索 "Health"
+result = await search(
+    query="Health",
+    domain="all",      # "cpp", "blueprint", "asset", "all"
+    scope="project",   # "project", "engine", "all"
+    max_results=100
+)
+
+# 获取 C++ 类的继承层次
+hierarchy = await get_hierarchy(
+    name="ACharacter", 
+    domain="cpp", 
+    scope="engine"
+)
+```
+
 ### 追踪 GAS 能力
 
 ```
 用户: 帮我追踪 GA_Hero_Dash 这个能力是怎么触发和执行的
 
 AI Agent:
-[使用 search_blueprints, get_blueprint_details, get_blueprint_graph...]
+[使用 search, get_hierarchy, get_blueprint_graph...]
 
 GA_Hero_Dash 完整流程：
 
@@ -205,7 +244,7 @@ GA_Hero_Dash 完整流程：
 用户: B_Hero_Default 被哪些地方引用了？
 
 AI Agent:
-[使用 get_blueprint_referencers, trace_reference_chain...]
+[使用 get_references, trace_reference_chain...]
 
 B_Hero_Default 引用情况：
 
@@ -219,6 +258,26 @@ B_Hero_Default 引用情况：
 ├─ B_LyraDefaultExperience
 ├─ B_ShooterGame_Elimination
 └─ ...
+```
+
+## 健康检查
+
+验证 UE 插件是否运行：
+
+```bash
+curl http://localhost:8080/health
+```
+
+返回：
+```json
+{
+  "ok": true,
+  "status": "running",
+  "plugin": "UnrealProjectAnalyzer",
+  "version": "0.2.0",
+  "ue_version": "5.3.2-xxx",
+  "project_name": "LyraStarterGame"
+}
 ```
 
 ## 常见问题
@@ -246,6 +305,9 @@ uv run pytest
 
 # 代码检查
 uv run ruff check .
+
+# 打印配置（调试用）
+uv run unreal-analyzer --print-config
 ```
 
 ## 致谢

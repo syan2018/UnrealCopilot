@@ -6,7 +6,6 @@ comprehensive cross-domain queries.
 """
 
 from ..ue_client import get_client
-from ..cpp_analyzer import get_analyzer
 from ..ue_client.http_client import UEPluginError
 
 
@@ -16,24 +15,22 @@ def _ue_error(tool: str, e: Exception) -> dict:
         "ok": False,
         "error": f"UE Plugin API 调用失败（{tool}）",
         "detail": str(e),
-        "hint": "请确认 UE 编辑器已启动且启用了 UnrealProjectAnalyzer 插件，并检查 UE_PLUGIN_HOST/UE_PLUGIN_PORT 配置。",
+        "hint": "请确认 UE 编辑器已启动且启用了 UnrealProjectAnalyzer 插件。",
     }
 
 
 async def trace_reference_chain(
-    start_asset: str,
-    max_depth: int = 3,
-    direction: str = "both"
+    start_asset: str, max_depth: int = 3, direction: str = "both"
 ) -> dict:
     """Trace the reference chain from an asset.
-    
+
     Uses async job + chunked retrieval to avoid socket_send_failure on large responses.
-    
+
     Args:
         start_asset: Starting asset path
         max_depth: Maximum depth to trace (default: 3)
         direction: "references", "referencers", or "both"
-    
+
     Returns:
         Dictionary containing:
         - root: Starting asset info
@@ -58,10 +55,10 @@ async def trace_reference_chain(
 
 async def find_cpp_class_usage(cpp_class: str) -> dict:
     """Find all Blueprint/Asset usage of a C++ class.
-    
+
     Args:
         cpp_class: C++ class name (e.g., "UCharacterMovementComponent")
-    
+
     Returns:
         Dictionary containing:
         - as_parent_class: Blueprints inheriting from this class
@@ -71,8 +68,11 @@ async def find_cpp_class_usage(cpp_class: str) -> dict:
     """
     client = get_client()
     try:
-        return await client.get("/analysis/cpp-class-usage", {
-            "class": cpp_class,
-        })
+        return await client.get(
+            "/analysis/cpp-class-usage",
+            {
+                "class": cpp_class,
+            },
+        )
     except UEPluginError as e:
         return _ue_error("find_cpp_class_usage", e)

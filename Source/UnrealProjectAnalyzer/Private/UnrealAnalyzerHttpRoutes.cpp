@@ -34,6 +34,29 @@ namespace
 		return Out;
 	}
 
+	// ============================================================================
+	// Health check endpoint
+	// ============================================================================
+	static bool HandleHealth(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+	{
+		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+		Root->SetBoolField(TEXT("ok"), true);
+		Root->SetStringField(TEXT("status"), TEXT("running"));
+		Root->SetStringField(TEXT("plugin"), TEXT("UnrealProjectAnalyzer"));
+		Root->SetStringField(TEXT("version"), TEXT("0.2.0"));
+		
+		// Add engine version info
+		Root->SetStringField(TEXT("ue_version"), *FEngineVersion::Current().ToString());
+		Root->SetNumberField(TEXT("ue_major"), ENGINE_MAJOR_VERSION);
+		Root->SetNumberField(TEXT("ue_minor"), ENGINE_MINOR_VERSION);
+		
+		// Add project info
+		Root->SetStringField(TEXT("project_name"), FApp::GetProjectName());
+		
+		OnComplete(FUnrealAnalyzerHttpUtils::JsonResponse(JsonString(Root)));
+		return true;
+	}
+
 	static IAssetRegistry& GetAssetRegistry()
 	{
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
@@ -1077,6 +1100,13 @@ void UnrealAnalyzerHttpRoutes::Register(TSharedPtr<IHttpRouter> Router)
 	{
 		return;
 	}
+
+	// Health check endpoint (for MCP client connectivity verification).
+	Router->BindRoute(
+		FHttpPath(TEXT("/health")),
+		EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateStatic(&HandleHealth)
+	);
 
 	// Blueprint tools (query-param based, to avoid path segment issues with "/Game/...").
 	Router->BindRoute(

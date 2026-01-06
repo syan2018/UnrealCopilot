@@ -1,7 +1,12 @@
 """
 Configuration management for Unreal Project Analyzer.
 
-All configuration is done via environment variables:
+Supports three-layer search model:
+- project: Game/project C++ source code and blueprints (default)
+- engine: Unreal Engine source code
+- all: Both project and engine
+
+Configuration via environment variables:
 
 C++ Analysis:
 - CPP_SOURCE_PATH: Path to project's C++ source directory (required for C++ analysis)
@@ -14,11 +19,24 @@ Unreal Plugin Communication:
 Cache Settings:
 - ANALYZER_CACHE_ENABLED: Enable caching (default: true)
 - ANALYZER_CACHE_MAX_SIZE: Maximum cache entries (default: 1000)
+
+Search Defaults:
+- DEFAULT_SEARCH_SCOPE: Default search scope (project/engine/all, default: project)
 """
 
 import os
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
+from typing import Literal
+
+
+class SearchScope(str, Enum):
+    """Search scope for code analysis."""
+
+    PROJECT = "project"  # Project source only (default)
+    ENGINE = "engine"  # Engine source only
+    ALL = "all"  # Both project and engine
 
 
 def _parse_bool(value: str | None, default: bool = True) -> bool:
@@ -28,21 +46,43 @@ def _parse_bool(value: str | None, default: bool = True) -> bool:
     return value.lower() in ("true", "1", "yes", "on")
 
 
+def _parse_scope(value: str | None) -> SearchScope:
+    """Parse search scope from environment variable."""
+    if value is None:
+        return SearchScope.PROJECT
+    try:
+        return SearchScope(value.lower())
+    except ValueError:
+        return SearchScope.PROJECT
+
+
+@dataclass
+class SourceConfig:
+    """Configuration for a source path with metadata."""
+
+    path: str
+    is_engine: bool = False
+    label: str = ""
+
+    def __post_init__(self):
+        if not self.label:
+            self.label = "engine" if self.is_engine else "project"
+
+
 @dataclass
 class Config:
     """Server configuration loaded from environment variables."""
-    
+
     # Unreal Plugin HTTP API
-    ue_plugin_host: str = field(
-        default_factory=lambda: os.getenv("UE_PLUGIN_HOST", "localhost")
-    )
-    ue_plugin_port: int = field(
-        default_factory=lambda: int(os.getenv("UE_PLUGIN_PORT", "8080"))
-    )
-    
-    # C++ Source paths (for tree-sitter analysis)
+    ue_plugin_host: str = field(default_factory=lambda: os.getenv("UE_PLUGIN_HOST", "localhost"))
+    ue_plugin_port: int = field(default_factory=lambda: int(os.getenv("UE_PLUGIN_PORT", "8080")))
+
+    # Source paths with scope metadata
+    _source_configs: list[SourceConfig] = field(default_factory=list)
+
+    # Legacy compatibility
     cpp_source_paths: list[str] = field(default_factory=list)
-    
+
     # Cache settings
     cache_enabled: bool = field(
         default_factory=lambda: _parse_bool(os.getenv("ANALYZER_CACHE_ENABLED"), True)
@@ -50,29 +90,94 @@ class Config:
     cache_max_size: int = field(
         default_factory=lambda: int(os.getenv("ANALYZER_CACHE_MAX_SIZE", "1000"))
     )
-    
+
+    # Default search scope
+    default_scope: SearchScope = field(
+        default_factory=lambda: _parse_scope(os.getenv("DEFAULT_SEARCH_SCOPE"))
+    )
+
     def __post_init__(self):
         """Initialize paths from environment after dataclass init."""
-        # Add CPP_SOURCE_PATH if set
+        # Add CPP_SOURCE_PATH as project source
         cpp_source = os.getenv("CPP_SOURCE_PATH")
         if cpp_source:
-            self.add_source_path(cpp_source)
-        
-        # Add UNREAL_ENGINE_PATH if set
+            self.add_source_path(cpp_source, is_engine=False)
+
+        # Add UNREAL_ENGINE_PATH as engine source
         unreal_path = os.getenv("UNREAL_ENGINE_PATH")
         if unreal_path:
-            self.add_source_path(unreal_path)
-    
+            self.add_source_path(unreal_path, is_engine=True)
+
     @property
     def ue_plugin_url(self) -> str:
         """Get the full URL for Unreal plugin API."""
         return f"http://{self.ue_plugin_host}:{self.ue_plugin_port}"
-    
-    def add_source_path(self, path: str | Path) -> None:
-        """Add a C++ source path for analysis."""
+
+    def add_source_path(self, path: str | Path, is_engine: bool = False, label: str = "") -> None:
+        """Add a C++ source path for analysis with scope metadata.
+
+        Args:
+            path: Path to the source directory
+            is_engine: Whether this is an engine path (affects search scope)
+            label: Optional label for this source (e.g., "lyra", "engine")
+        """
         path_str = str(Path(path).resolve())
+
+        # Check for duplicates
+        for cfg in self._source_configs:
+            if cfg.path == path_str:
+                return
+
+        self._source_configs.append(
+            SourceConfig(
+                path=path_str,
+                is_engine=is_engine,
+                label=label or ("engine" if is_engine else "project"),
+            )
+        )
+
+        # Legacy compatibility
         if path_str not in self.cpp_source_paths:
             self.cpp_source_paths.append(path_str)
+
+    def get_source_paths(
+        self, scope: SearchScope | Literal["project", "engine", "all"] | None = None
+    ) -> list[str]:
+        """Get source paths filtered by scope.
+
+        Args:
+            scope: Search scope (project, engine, all). If None, uses default_scope.
+
+        Returns:
+            List of source paths matching the scope.
+        """
+        if scope is None:
+            scope = self.default_scope
+        elif isinstance(scope, str):
+            scope = SearchScope(scope)
+
+        if scope == SearchScope.ALL:
+            return [cfg.path for cfg in self._source_configs]
+        elif scope == SearchScope.ENGINE:
+            return [cfg.path for cfg in self._source_configs if cfg.is_engine]
+        else:  # PROJECT
+            return [cfg.path for cfg in self._source_configs if not cfg.is_engine]
+
+    def get_project_paths(self) -> list[str]:
+        """Get project-only source paths (convenience method)."""
+        return self.get_source_paths(SearchScope.PROJECT)
+
+    def get_engine_paths(self) -> list[str]:
+        """Get engine-only source paths (convenience method)."""
+        return self.get_source_paths(SearchScope.ENGINE)
+
+    def has_engine_source(self) -> bool:
+        """Check if engine source paths are configured."""
+        return any(cfg.is_engine for cfg in self._source_configs)
+
+    def has_project_source(self) -> bool:
+        """Check if project source paths are configured."""
+        return any(not cfg.is_engine for cfg in self._source_configs)
 
 
 # Global config instance
