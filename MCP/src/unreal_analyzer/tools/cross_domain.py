@@ -27,6 +27,8 @@ async def trace_reference_chain(
 ) -> dict:
     """Trace the reference chain from an asset.
     
+    Uses async job + chunked retrieval to avoid socket_send_failure on large responses.
+    
     Args:
         start_asset: Starting asset path
         max_depth: Maximum depth to trace (default: 3)
@@ -40,11 +42,16 @@ async def trace_reference_chain(
     """
     client = get_client()
     try:
-        return await client.get("/analysis/reference-chain", {
-            "start": start_asset,
-            "depth": max_depth,
-            "direction": direction,
-        })
+        # Use get_with_async for automatic async job handling
+        return await client.get_with_async(
+            "/analysis/reference-chain",
+            {
+                "start": start_asset,
+                "depth": max_depth,
+                "direction": direction,
+            },
+            timeout_s=120.0,  # Large reference chains may take time
+        )
     except UEPluginError as e:
         return _ue_error("trace_reference_chain", e)
 

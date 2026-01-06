@@ -101,6 +101,8 @@ async def get_blueprint_referencers(bp_path: str) -> dict:
 async def get_blueprint_graph(bp_path: str, graph_name: str = "EventGraph") -> dict:
     """Get the node graph of a blueprint.
     
+    Uses async job + chunked retrieval for large graphs to avoid socket_send_failure.
+    
     Args:
         bp_path: Blueprint asset path
         graph_name: Name of the graph (default: "EventGraph")
@@ -112,7 +114,12 @@ async def get_blueprint_graph(bp_path: str, graph_name: str = "EventGraph") -> d
     """
     client = get_client()
     try:
-        return await client.get("/blueprint/graph", {"bp_path": bp_path, "graph_name": graph_name})
+        # Use get_with_async for automatic async job handling (large graphs)
+        return await client.get_with_async(
+            "/blueprint/graph",
+            {"bp_path": bp_path, "graph_name": graph_name},
+            timeout_s=60.0,
+        )
     except UEPluginError as e:
         return _ue_error("get_blueprint_graph", e)
 

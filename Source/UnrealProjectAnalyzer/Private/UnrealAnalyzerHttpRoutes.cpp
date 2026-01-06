@@ -5,10 +5,12 @@
 #include "UnrealAnalyzerHttpUtils.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Async/Async.h"
 #include "Dom/JsonObject.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
+#include "HAL/CriticalSection.h"
 #include "Engine/Blueprint.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
@@ -275,30 +277,70 @@ namespace
 		return true;
 	}
 
-	static bool HandleBlueprintGraph(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+	// ----------------------------------------------------------------------------
+	// Async JSON job framework (avoid huge single HTTP responses)
+	// Must be defined before handlers that use it.
+	// ----------------------------------------------------------------------------
+	enum class EAsyncJsonJobStatus : uint8
 	{
-		FString BpPath;
-		if (!FUnrealAnalyzerHttpUtils::GetRequiredQueryParam(Request, TEXT("bp_path"), BpPath))
-		{
-			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Missing required query param: bp_path")));
-			return true;
-		}
-		const FString GraphName = FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("graph_name"), TEXT("EventGraph"));
+		Pending,
+		Running,
+		Done,
+		Error
+	};
 
-		UBlueprint* Blueprint = LoadBlueprintFromPath(BpPath);
-		if (!Blueprint)
-		{
-			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Failed to load Blueprint"), EHttpServerResponseCodes::NotFound, BpPath));
-			return true;
-		}
+	struct FAsyncJsonJob
+	{
+		EAsyncJsonJobStatus Status = EAsyncJsonJobStatus::Pending;
+		FString ResultJson;
+		FString Error;
+		FDateTime CreatedAt = FDateTime::UtcNow();
+	};
 
-		UEdGraph* Graph = FindBlueprintGraph(Blueprint, GraphName);
-		if (!Graph)
-		{
-			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Graph not found"), EHttpServerResponseCodes::NotFound, GraphName));
-			return true;
-		}
+	static FCriticalSection GAsyncJobsMutex;
+	static TMap<FGuid, TSharedPtr<FAsyncJsonJob>> GAsyncJobs;
 
+	static FString JobStatusToString(EAsyncJsonJobStatus Status)
+	{
+		switch (Status)
+		{
+		case EAsyncJsonJobStatus::Pending: return TEXT("pending");
+		case EAsyncJsonJobStatus::Running: return TEXT("running");
+		case EAsyncJsonJobStatus::Done: return TEXT("done");
+		case EAsyncJsonJobStatus::Error: return TEXT("error");
+		default: return TEXT("unknown");
+		}
+	}
+
+	static void CleanupOldJobs_Locked()
+	{
+		// Best-effort cleanup; keep jobs for 10 minutes.
+		const FDateTime Now = FDateTime::UtcNow();
+		const FTimespan Ttl = FTimespan::FromMinutes(10);
+
+		for (auto It = GAsyncJobs.CreateIterator(); It; ++It)
+		{
+			const TSharedPtr<FAsyncJsonJob>& Job = It.Value();
+			if (!Job.IsValid())
+			{
+				It.RemoveCurrent();
+				continue;
+			}
+			if ((Now - Job->CreatedAt) > Ttl)
+			{
+				It.RemoveCurrent();
+			}
+		}
+	}
+
+	// Helper: Build blueprint graph JSON (shared by sync and async handlers)
+	static TSharedRef<FJsonObject> BuildBlueprintGraphJson(
+		const FString& BpPath,
+		const FString& GraphName,
+		UBlueprint* Blueprint,
+		UEdGraph* Graph
+	)
+	{
 		TArray<TSharedPtr<FJsonValue>> Nodes;
 		TArray<TSharedPtr<FJsonValue>> Connections;
 
@@ -372,6 +414,79 @@ namespace
 		Root->SetNumberField(TEXT("node_count"), Nodes.Num());
 		Root->SetNumberField(TEXT("connection_count"), Connections.Num());
 
+		return Root;
+	}
+
+	static bool HandleBlueprintGraph(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+	{
+		FString BpPath;
+		if (!FUnrealAnalyzerHttpUtils::GetRequiredQueryParam(Request, TEXT("bp_path"), BpPath))
+		{
+			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Missing required query param: bp_path")));
+			return true;
+		}
+		const FString GraphName = FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("graph_name"), TEXT("EventGraph"));
+
+		UBlueprint* Blueprint = LoadBlueprintFromPath(BpPath);
+		if (!Blueprint)
+		{
+			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Failed to load Blueprint"), EHttpServerResponseCodes::NotFound, BpPath));
+			return true;
+		}
+
+		UEdGraph* Graph = FindBlueprintGraph(Blueprint, GraphName);
+		if (!Graph)
+		{
+			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Graph not found"), EHttpServerResponseCodes::NotFound, GraphName));
+			return true;
+		}
+
+		// Check node count - if large, use async mode to avoid socket_send_failure
+		const int32 NodeCount = Graph->Nodes.Num();
+		const int32 AsyncThreshold = 50;  // Graphs with 50+ nodes go async
+
+		if (NodeCount >= AsyncThreshold)
+		{
+			// Create async job
+			const FGuid JobId = FGuid::NewGuid();
+			const FString JobIdStr = JobId.ToString(EGuidFormats::Digits);
+
+			TSharedPtr<FAsyncJsonJob> Job = MakeShared<FAsyncJsonJob>();
+			Job->Status = EAsyncJsonJobStatus::Pending;
+			Job->CreatedAt = FDateTime::UtcNow();
+
+			{
+				FScopeLock Lock(&GAsyncJobsMutex);
+				CleanupOldJobs_Locked();
+				GAsyncJobs.Add(JobId, Job);
+			}
+
+			// Capture values for async task
+			const FString CapturedBpPath = BpPath;
+			const FString CapturedGraphName = GraphName;
+
+			// NOTE: Blueprint/Graph pointers are not safe to use in background threads.
+			// We build the JSON on the game thread but store in job for chunked retrieval.
+			Job->Status = EAsyncJsonJobStatus::Running;
+			TSharedRef<FJsonObject> ResultJson = BuildBlueprintGraphJson(CapturedBpPath, CapturedGraphName, Blueprint, Graph);
+			Job->ResultJson = JsonString(ResultJson);
+			Job->Status = EAsyncJsonJobStatus::Done;
+
+			// Return async job envelope
+			TSharedRef<FJsonObject> Ack = MakeShared<FJsonObject>();
+			Ack->SetBoolField(TEXT("ok"), true);
+			Ack->SetStringField(TEXT("mode"), TEXT("async"));
+			Ack->SetStringField(TEXT("job_id"), JobIdStr);
+			Ack->SetStringField(TEXT("status_url"), FString::Printf(TEXT("/analysis/job/status?id=%s"), *JobIdStr));
+			Ack->SetStringField(TEXT("result_url_template"), FString::Printf(TEXT("/analysis/job/result?id=%s&offset={offset}&limit={limit}"), *JobIdStr));
+			Ack->SetNumberField(TEXT("estimated_nodes"), NodeCount);
+
+			OnComplete(FUnrealAnalyzerHttpUtils::JsonResponse(JsonString(Ack)));
+			return true;
+		}
+
+		// Small graph - return directly
+		TSharedRef<FJsonObject> Root = BuildBlueprintGraphJson(BpPath, GraphName, Blueprint, Graph);
 		OnComplete(FUnrealAnalyzerHttpUtils::JsonResponse(JsonString(Root)));
 		return true;
 	}
@@ -713,7 +828,115 @@ namespace
 		return NodeObj;
 	}
 
-	static bool HandleReferenceChain(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+	// Job status/result handlers defined after async framework (moved to earlier in file)
+	static bool HandleAnalysisJobStatus(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+	{
+		FString JobIdStr;
+		if (!FUnrealAnalyzerHttpUtils::GetRequiredQueryParam(Request, TEXT("id"), JobIdStr))
+		{
+			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Missing required query param: id")));
+			return true;
+		}
+
+		FGuid JobId;
+		if (!FGuid::Parse(JobIdStr, JobId))
+		{
+			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Invalid job id"), EHttpServerResponseCodes::BadRequest, JobIdStr));
+			return true;
+		}
+
+		TSharedPtr<FAsyncJsonJob> Job;
+		{
+			FScopeLock Lock(&GAsyncJobsMutex);
+			CleanupOldJobs_Locked();
+			Job = GAsyncJobs.FindRef(JobId);
+		}
+
+		if (!Job.IsValid())
+		{
+			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Job not found"), EHttpServerResponseCodes::NotFound, JobIdStr));
+			return true;
+		}
+
+		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+		Root->SetBoolField(TEXT("ok"), true);
+		Root->SetStringField(TEXT("id"), JobIdStr);
+		Root->SetStringField(TEXT("status"), JobStatusToString(Job->Status));
+		if (Job->Status == EAsyncJsonJobStatus::Done)
+		{
+			Root->SetNumberField(TEXT("total_chars"), Job->ResultJson.Len());
+		}
+		if (Job->Status == EAsyncJsonJobStatus::Error)
+		{
+			Root->SetStringField(TEXT("error"), Job->Error);
+		}
+
+		OnComplete(FUnrealAnalyzerHttpUtils::JsonResponse(JsonString(Root)));
+		return true;
+	}
+
+	static bool HandleAnalysisJobResult(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+	{
+		FString JobIdStr;
+		if (!FUnrealAnalyzerHttpUtils::GetRequiredQueryParam(Request, TEXT("id"), JobIdStr))
+		{
+			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Missing required query param: id")));
+			return true;
+		}
+
+		FGuid JobId;
+		if (!FGuid::Parse(JobIdStr, JobId))
+		{
+			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Invalid job id"), EHttpServerResponseCodes::BadRequest, JobIdStr));
+			return true;
+		}
+
+		const int32 Offset = FMath::Max(0, FCString::Atoi(*FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("offset"), TEXT("0"))));
+		const int32 Limit = FMath::Clamp(FCString::Atoi(*FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("limit"), TEXT("65536"))), 1, 262144);
+
+		TSharedPtr<FAsyncJsonJob> Job;
+		{
+			FScopeLock Lock(&GAsyncJobsMutex);
+			CleanupOldJobs_Locked();
+			Job = GAsyncJobs.FindRef(JobId);
+		}
+
+		if (!Job.IsValid())
+		{
+			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Job not found"), EHttpServerResponseCodes::NotFound, JobIdStr));
+			return true;
+		}
+
+		if (Job->Status != EAsyncJsonJobStatus::Done)
+		{
+			OnComplete(FUnrealAnalyzerHttpUtils::JsonError(TEXT("Job not ready"), EHttpServerResponseCodes::Accepted, JobStatusToString(Job->Status)));
+			return true;
+		}
+
+		const int32 Total = Job->ResultJson.Len();
+		const int32 SafeOffset = FMath::Clamp(Offset, 0, Total);
+		const int32 SafeLen = FMath::Clamp(Limit, 1, FMath::Max(1, Total - SafeOffset));
+		const FString Chunk = Job->ResultJson.Mid(SafeOffset, SafeLen);
+		const int32 NextOffset = SafeOffset + SafeLen;
+
+		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+		Root->SetBoolField(TEXT("ok"), true);
+		Root->SetStringField(TEXT("id"), JobIdStr);
+		Root->SetNumberField(TEXT("offset"), SafeOffset);
+		Root->SetNumberField(TEXT("limit"), SafeLen);
+		Root->SetNumberField(TEXT("total_chars"), Total);
+		Root->SetNumberField(TEXT("next_offset"), NextOffset);
+		Root->SetBoolField(TEXT("done"), NextOffset >= Total);
+		Root->SetStringField(TEXT("chunk"), Chunk);
+
+		OnComplete(FUnrealAnalyzerHttpUtils::JsonResponse(JsonString(Root)));
+		return true;
+	}
+
+	// ----------------------------------------------------------------------------
+	// Reference chain (async, chunked retrieval)
+	// ----------------------------------------------------------------------------
+	static bool HandleReferenceChainAsync(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
 	{
 		FString Start;
 		if (!FUnrealAnalyzerHttpUtils::GetRequiredQueryParam(Request, TEXT("start"), Start))
@@ -723,24 +946,67 @@ namespace
 		}
 
 		const FString Direction = FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("direction"), TEXT("both"));
-		const int32 MaxDepth = FCString::Atoi(*FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("depth"), TEXT("3")));
+		// Keep depth user-controlled but clamp to a reasonable upper bound to avoid pathological requests.
+		const int32 MaxDepth = FMath::Clamp(
+			FCString::Atoi(*FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("depth"), TEXT("3"))),
+			0, 10
+		);
 		const FString StartPackage = FUnrealAnalyzerHttpUtils::NormalizeToPackagePath(Start);
 
-		TSet<FString> Visited;
-		Visited.Add(StartPackage);
+		const FGuid JobId = FGuid::NewGuid();
+		const FString JobIdStr = JobId.ToString(EGuidFormats::Digits);
 
-		TSharedPtr<FJsonObject> Chain = BuildRefChainNodeJson(StartPackage, 0, FMath::Max(0, MaxDepth), Direction, Visited);
+		TSharedPtr<FAsyncJsonJob> Job = MakeShared<FAsyncJsonJob>();
+		Job->Status = EAsyncJsonJobStatus::Pending;
+		Job->CreatedAt = FDateTime::UtcNow();
 
-		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
-		Root->SetBoolField(TEXT("ok"), true);
-		Root->SetStringField(TEXT("start"), StartPackage);
-		Root->SetStringField(TEXT("direction"), Direction);
-		Root->SetNumberField(TEXT("max_depth"), MaxDepth);
-		Root->SetObjectField(TEXT("chain"), Chain);
-		Root->SetNumberField(TEXT("unique_nodes"), Visited.Num());
+		{
+			FScopeLock Lock(&GAsyncJobsMutex);
+			CleanupOldJobs_Locked();
+			GAsyncJobs.Add(JobId, Job);
+		}
 
-		OnComplete(FUnrealAnalyzerHttpUtils::JsonResponse(JsonString(Root)));
+		Async(EAsyncExecution::ThreadPool, [JobId, Job, StartPackage, Direction, MaxDepth]()
+		{
+			Job->Status = EAsyncJsonJobStatus::Running;
+			Job->CreatedAt = FDateTime::UtcNow();
+			Job->Error.Empty();
+			Job->ResultJson.Empty();
+
+			TSet<FString> Visited;
+			Visited.Add(StartPackage);
+
+			// Build chain
+			TSharedPtr<FJsonObject> Chain = BuildRefChainNodeJson(StartPackage, 0, FMath::Max(0, MaxDepth), Direction, Visited);
+
+			TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+			Root->SetBoolField(TEXT("ok"), true);
+			Root->SetStringField(TEXT("start"), StartPackage);
+			Root->SetStringField(TEXT("direction"), Direction);
+			Root->SetNumberField(TEXT("max_depth"), MaxDepth);
+			Root->SetObjectField(TEXT("chain"), Chain);
+			Root->SetNumberField(TEXT("unique_nodes"), Visited.Num());
+
+			// Serialize
+			Job->ResultJson = JsonString(Root);
+			Job->Status = EAsyncJsonJobStatus::Done;
+		});
+
+		TSharedRef<FJsonObject> Ack = MakeShared<FJsonObject>();
+		Ack->SetBoolField(TEXT("ok"), true);
+		Ack->SetStringField(TEXT("mode"), TEXT("async"));
+		Ack->SetStringField(TEXT("job_id"), JobIdStr);
+		Ack->SetStringField(TEXT("status_url"), FString::Printf(TEXT("/analysis/job/status?id=%s"), *JobIdStr));
+		Ack->SetStringField(TEXT("result_url_template"), FString::Printf(TEXT("/analysis/job/result?id=%s&offset={offset}&limit={limit}"), *JobIdStr));
+
+		OnComplete(FUnrealAnalyzerHttpUtils::JsonResponse(JsonString(Ack)));
 		return true;
+	}
+
+	// Backward-compatible entrypoint: keep the old route name but return an async job.
+	static bool HandleReferenceChain(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+	{
+		return HandleReferenceChainAsync(Request, OnComplete);
 	}
 
 	static bool HandleCppClassUsage(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
@@ -871,6 +1137,21 @@ void UnrealAnalyzerHttpRoutes::Register(TSharedPtr<IHttpRouter> Router)
 		FHttpPath(TEXT("/analysis/reference-chain")),
 		EHttpServerRequestVerbs::VERB_GET,
 		FHttpRequestHandler::CreateStatic(&HandleReferenceChain)
+	);
+	Router->BindRoute(
+		FHttpPath(TEXT("/analysis/reference-chain/async")),
+		EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateStatic(&HandleReferenceChainAsync)
+	);
+	Router->BindRoute(
+		FHttpPath(TEXT("/analysis/job/status")),
+		EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateStatic(&HandleAnalysisJobStatus)
+	);
+	Router->BindRoute(
+		FHttpPath(TEXT("/analysis/job/result")),
+		EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateStatic(&HandleAnalysisJobResult)
 	);
 	Router->BindRoute(
 		FHttpPath(TEXT("/analysis/cpp-class-usage")),
