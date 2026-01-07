@@ -41,10 +41,19 @@ description: "MCP 工具设计原则和完整工具清单"
 | 参数 | 可选值 | 说明 |
 |------|--------|------|
 | `domain` | `cpp`, `blueprint`, `asset`, `all` | 搜索/操作域 |
-| `scope` | `project`, `engine`, `all` | 搜索范围 |
+| `scope` | `project`, `engine`, `plugin`, `all` | 搜索范围（含插件支持） |
 | `direction` | `outgoing`, `incoming`, `both` | 引用方向（统一命名） |
 | `format` | `mermaid`, `summary`, `json` / `detailed`, `summary` | 输出格式 |
 | `type_filter` | 字符串 | 类型过滤（合并了 asset_type 和 class_filter） |
+
+### Scope 语义（v0.3.2）
+
+| Scope | C++ 范围 | Blueprint/Asset 范围 |
+|-------|----------|---------------------|
+| `project` | Source/ + Plugins/*/Source/ | /Game/ + 插件资产 |
+| `engine` | Engine/Source/ + Engine/Plugins/ | /Engine/ + /Script/ |
+| `plugin` | 所有 Plugins/*/Source/ | 只有插件资产（非 /Game/、/Engine/、/Script/） |
+| `all` | 全部 | 全部 |
 
 ### 已删除的冗余参数
 

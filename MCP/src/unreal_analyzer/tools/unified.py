@@ -19,9 +19,32 @@ from ..cpp_analyzer import get_analyzer
 from ..ue_client import get_client
 from ..ue_client.http_client import UEPluginError
 
-# Type aliases
-ScopeType = Literal["project", "engine", "all"]
+# Type aliases (plugin scope searches only plugin directories/assets)
+ScopeType = Literal["project", "engine", "plugin", "all"]
 DomainType = Literal["cpp", "blueprint", "asset", "all"]
+
+
+def _is_plugin_asset_path(path: str) -> bool:
+    """
+    Check if an asset path belongs to a plugin.
+
+    Plugin assets typically have paths like:
+    - /<PluginName>/... (not /Game/ or /Engine/ or /Script/)
+
+    Args:
+        path: Asset path to check.
+
+    Returns:
+        True if the path belongs to a plugin.
+    """
+    if not path:
+        return False
+    # Plugin assets don't start with /Game/, /Engine/, or /Script/
+    return (
+        not path.startswith("/Game/")
+        and not path.startswith("/Engine/")
+        and not path.startswith("/Script/")
+    )
 
 
 def _ue_error(tool: str, e: Exception) -> dict:
@@ -89,7 +112,7 @@ async def search(
     ] = "all",
     scope: Annotated[
         ScopeType,
-        "Search scope: 'project' (default) | 'engine' | 'all'.",
+        "Search scope: 'project' (default) | 'engine' | 'plugin' | 'all'.",
     ] = "project",
     type_filter: Annotated[
         str,
@@ -161,9 +184,10 @@ async def search(
 
             merged: dict[str, dict] = {}
             for pat in patterns:
+                # Pass scope to UE plugin for server-side filtering
                 bp_result = await client.get(
                     "/blueprint/search",
-                    {"pattern": pat, "class": type_filter},
+                    {"pattern": pat, "class": type_filter, "scope": scope},
                 )
                 for m in bp_result.get("matches", []):
                     path = str(m.get("path", ""))
@@ -172,11 +196,25 @@ async def search(
 
             matches = list(merged.values())
 
-            # Apply scope filter
+            # Apply scope filter (client-side fallback for older UE plugin versions)
             if scope == "project":
-                matches = [m for m in matches if not m.get("path", "").startswith("/Script/")]
+                # Project: /Game/ assets + plugin assets (not /Script/ or /Engine/)
+                matches = [
+                    m for m in matches
+                    if not m.get("path", "").startswith("/Script/")
+                    and not m.get("path", "").startswith("/Engine/")
+                ]
             elif scope == "engine":
-                matches = [m for m in matches if m.get("path", "").startswith("/Script/")]
+                # Engine: /Script/ and /Engine/ assets
+                matches = [
+                    m for m in matches
+                    if m.get("path", "").startswith("/Script/")
+                    or m.get("path", "").startswith("/Engine/")
+                ]
+            elif scope == "plugin":
+                # Plugin: only plugin assets (not /Game/, /Engine/, /Script/)
+                matches = [m for m in matches if _is_plugin_asset_path(m.get("path", ""))]
+            # scope == "all": no filtering
 
             # Score & sort for multi-token queries
             if len(patterns) > 1:
@@ -209,9 +247,10 @@ async def search(
 
             merged: dict[str, dict] = {}
             for pat in patterns:
+                # Pass scope to UE plugin for server-side filtering
                 asset_result = await client.get(
                     "/asset/search",
-                    {"pattern": pat, "type": type_filter},
+                    {"pattern": pat, "type": type_filter, "scope": scope},
                 )
                 for m in asset_result.get("matches", []):
                     path = str(m.get("path", ""))
@@ -220,19 +259,25 @@ async def search(
 
             matches = list(merged.values())
 
-            # Apply scope filter
+            # Apply scope filter (client-side fallback for older UE plugin versions)
             if scope == "project":
+                # Project: /Game/ assets + plugin assets (not /Script/ or /Engine/)
                 matches = [
                     m for m in matches
                     if not m.get("path", "").startswith("/Script/")
                     and not m.get("path", "").startswith("/Engine/")
                 ]
             elif scope == "engine":
+                # Engine: /Script/ and /Engine/ assets
                 matches = [
                     m for m in matches
                     if m.get("path", "").startswith("/Script/")
                     or m.get("path", "").startswith("/Engine/")
                 ]
+            elif scope == "plugin":
+                # Plugin: only plugin assets (not /Game/, /Engine/, /Script/)
+                matches = [m for m in matches if _is_plugin_asset_path(m.get("path", ""))]
+            # scope == "all": no filtering
 
             # Score & sort for multi-token queries
             if len(patterns) > 1:
@@ -273,7 +318,7 @@ async def get_hierarchy(
     ] = "cpp",
     scope: Annotated[
         ScopeType,
-        "C++ search scope: 'project' (default) | 'engine' | 'all'.",
+        "C++ search scope: 'project' (default) | 'engine' | 'plugin' | 'all'.",
     ] = "project",
 ) -> dict:
     """Get inheritance hierarchy for a class (C++ or Blueprint)."""
@@ -302,7 +347,7 @@ async def get_references(
     ] = "asset",
     scope: Annotated[
         ScopeType,
-        "C++ search scope: 'project' (default) | 'engine' | 'all'.",
+        "C++ search scope: 'project' (default) | 'engine' | 'plugin' | 'all'.",
     ] = "project",
     direction: Annotated[
         Literal["outgoing", "incoming", "both"],
@@ -362,7 +407,7 @@ async def get_details(
     ] = "blueprint",
     scope: Annotated[
         ScopeType,
-        "C++ search scope: 'project' (default) | 'engine' | 'all'.",
+        "C++ search scope: 'project' (default) | 'engine' | 'plugin' | 'all'.",
     ] = "project",
 ) -> dict:
     """

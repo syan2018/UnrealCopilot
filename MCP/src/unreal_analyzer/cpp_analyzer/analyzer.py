@@ -11,10 +11,11 @@ Core capabilities:
 - UE pattern detection (UPROPERTY, UFUNCTION, etc.)
 - Blueprint exposure analysis
 
-Supports three-layer search scope:
-- project: Project C++ source only (default)
-- engine: Unreal Engine source only
-- all: Both project and engine
+Supports four-layer search scope:
+- project: Project Source + Project Plugins (default)
+- engine: Engine Source + Engine Plugins
+- plugin: All Plugins (project + engine)
+- all: Everything
 """
 
 import re
@@ -30,8 +31,8 @@ from ..config import SearchScope, get_config
 from .patterns import detect_ue_pattern, is_ue_macro_call
 from .queries import QUERY_PATTERNS
 
-# Type alias for scope parameter
-ScopeType = SearchScope | Literal["project", "engine", "all"] | None
+# Type alias for scope parameter (includes new "plugin" scope)
+ScopeType = SearchScope | Literal["project", "engine", "plugin", "all"] | None
 
 
 # ============================================================================
@@ -179,9 +180,10 @@ class CppAnalyzer:
     - UE pattern detection (Blueprint exposure)
 
     Supports scope-based searching:
-    - project: Search only project source
-    - engine: Search only engine source
-    - all: Search both
+    - project: Project Source + Project Plugins (default)
+    - engine: Engine Source + Engine Plugins
+    - plugin: All Plugins (project + engine)
+    - all: Everything
     """
 
     def __init__(self):
@@ -1011,6 +1013,9 @@ class CppAnalyzer:
         elif norm_scope == SearchScope.ENGINE:
             eng_roots = cfg.get_engine_paths()
             results = [m for m in results if _is_under_any_root(str(m.get("file", "")), eng_roots)]
+        elif norm_scope == SearchScope.PLUGIN:
+            plugin_roots = cfg.get_plugin_paths()
+            results = [m for m in results if _is_under_any_root(str(m.get("file", "")), plugin_roots)]
         # SearchScope.ALL: keep as-is.
 
         return {

@@ -129,10 +129,59 @@ namespace
 		return nullptr;
 	}
 
+	// ============================================================================
+	// Scope filtering helpers for plugin support
+	// ============================================================================
+
+	/**
+	 * Check if an asset path belongs to a plugin.
+	 * Plugin assets have paths like /<PluginName>/... (not /Game/, /Engine/, or /Script/)
+	 */
+	static bool IsPluginAssetPath(const FString& PackagePath)
+	{
+		return !PackagePath.StartsWith(TEXT("/Game/"))
+			&& !PackagePath.StartsWith(TEXT("/Engine/"))
+			&& !PackagePath.StartsWith(TEXT("/Script/"));
+	}
+
+	/**
+	 * Check if an asset path matches the given scope.
+	 * @param PackagePath The asset package path (e.g., /Game/BP_Player, /MyPlugin/Data)
+	 * @param Scope The scope filter: "project", "engine", "plugin", or "all"
+	 * @return true if the asset matches the scope
+	 */
+	static bool MatchesScope(const FString& PackagePath, const FString& Scope)
+	{
+		if (Scope.IsEmpty() || Scope.Equals(TEXT("all"), ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+
+		const bool bIsPlugin = IsPluginAssetPath(PackagePath);
+		const bool bIsEngine = PackagePath.StartsWith(TEXT("/Engine/")) || PackagePath.StartsWith(TEXT("/Script/"));
+
+		if (Scope.Equals(TEXT("plugin"), ESearchCase::IgnoreCase))
+		{
+			// Plugin scope: only plugin assets
+			return bIsPlugin;
+		}
+		else if (Scope.Equals(TEXT("engine"), ESearchCase::IgnoreCase))
+		{
+			// Engine scope: /Engine/ and /Script/ paths
+			return bIsEngine;
+		}
+		else // "project" (default)
+		{
+			// Project scope: /Game/ and plugin assets (not /Engine/ or /Script/)
+			return !bIsEngine;
+		}
+	}
+
 	static bool HandleBlueprintSearch(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
 	{
 		const FString PatternRaw = FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("pattern"), TEXT("*"));
 		const FString ClassFilter = FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("class"), TEXT(""));
+		const FString Scope = FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("scope"), TEXT("project"));
 
 		// Make a wildcard-friendly pattern: "Foo" -> "*Foo*"
 		FString Pattern = PatternRaw;
@@ -160,6 +209,13 @@ namespace
 			}
 
 			const FString PackagePath = Asset.PackageName.ToString();
+
+			// Apply scope filter
+			if (!MatchesScope(PackagePath, Scope))
+			{
+				continue;
+			}
+
 			if (!ClassFilter.IsEmpty())
 			{
 				UBlueprint* BP = LoadBlueprintFromPath(PackagePath);
@@ -195,6 +251,7 @@ namespace
 
 		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 		Root->SetBoolField(TEXT("ok"), true);
+		Root->SetStringField(TEXT("scope"), Scope);
 		Root->SetArrayField(TEXT("matches"), Matches);
 		Root->SetNumberField(TEXT("count"), Matches.Num());
 
@@ -682,6 +739,7 @@ namespace
 	{
 		const FString PatternRaw = FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("pattern"), TEXT("*"));
 		const FString TypeFilter = FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("type"), TEXT(""));
+		const FString Scope = FUnrealAnalyzerHttpUtils::GetOptionalQueryParam(Request, TEXT("scope"), TEXT("project"));
 
 		FString Pattern = PatternRaw;
 		if (!Pattern.Contains(TEXT("*")) && !Pattern.Contains(TEXT("?")))
@@ -719,6 +777,14 @@ namespace
 				continue;
 			}
 
+			const FString PackagePath = Asset.PackageName.ToString();
+
+			// Apply scope filter
+			if (!MatchesScope(PackagePath, Scope))
+			{
+				continue;
+			}
+
 			const FString AssetTypeName = Asset.AssetClassPath.GetAssetName().ToString();
 			if (!TypeFilter.IsEmpty())
 			{
@@ -730,13 +796,14 @@ namespace
 
 			TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
 			Item->SetStringField(TEXT("name"), Name);
-			Item->SetStringField(TEXT("path"), Asset.PackageName.ToString());
+			Item->SetStringField(TEXT("path"), PackagePath);
 			Item->SetStringField(TEXT("type"), AssetTypeName);
 			Matches.Add(MakeShared<FJsonValueObject>(Item));
 		}
 
 		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 		Root->SetBoolField(TEXT("ok"), true);
+		Root->SetStringField(TEXT("scope"), Scope);
 		Root->SetArrayField(TEXT("matches"), Matches);
 		Root->SetNumberField(TEXT("count"), Matches.Num());
 		OnComplete(FUnrealAnalyzerHttpUtils::JsonResponse(JsonString(Root)));
