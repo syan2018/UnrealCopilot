@@ -38,6 +38,18 @@ MCP Server for analyzing Unreal Engine 5 projects - Blueprint, Asset, and C++ so
 - **Unreal Engine 5.3+**
 - **[uv](https://docs.astral.sh/uv/)** - Python package manager (required)
 
+### 0. One-time dependency sync (recommended)
+
+Auto-install is supported, but for the **first run** we strongly recommend syncing the Python dependencies manually
+before opening the editor (more reliable, easier to debug):
+
+```powershell
+cd <PluginRoot>\Content\Python
+uv sync
+```
+
+Then open Unreal Editor and start the MCP server.
+
 ### 1. Install the Plugin
 
 Copy the `UnrealProjectAnalyzer` folder to your Unreal project's `Plugins/` directory:
@@ -62,7 +74,7 @@ YourProject/
 ### 3. Start MCP Server
 
 1. In Unreal Editor menu: **Tools → Unreal Project Analyzer → Start MCP Server**
-2. Check Output Log for: `LogMcpServer: MCP Server process started`
+2. Check Output Log / notifications for: `MCP Server is running`
 3. Copy MCP URL via: **Tools → Unreal Project Analyzer → Copy MCP URL**
 
 ### 4. Connect from Cursor
@@ -125,8 +137,8 @@ uv run unreal-analyzer -- \
 ┌──────────────────────────────────────────────────────────────────┐
 │              UnrealProjectAnalyzer Plugin (Editor)               │
 │  ┌─────────────────────────┐  ┌────────────────────────────────┐ │
-│  │   HTTP Server (:8080)   │  │   MCP Launcher (uv process)    │ │
-│  │   Blueprint/Asset API   │  │   Auto-start from Editor       │ │
+│  │   HTTP Server (:8080)   │  │   MCP Server (UE Python)       │ │
+│  │   Blueprint/Asset API   │  │   Managed by AnalyzerSubsystem │ │
 │  │   /health endpoint      │  │                                │ │
 │  └─────────────────────────┘  └────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘

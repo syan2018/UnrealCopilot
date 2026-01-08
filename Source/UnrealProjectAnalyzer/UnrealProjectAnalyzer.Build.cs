@@ -7,12 +7,13 @@ public class UnrealProjectAnalyzer : ModuleRules
     public UnrealProjectAnalyzer(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-        
+
         PublicDependencyModuleNames.AddRange(new string[]
         {
             "Core",
             "CoreUObject",
             "Engine",
+            "EditorSubsystem",  // Required for UEditorSubsystem base class
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]
@@ -20,21 +21,24 @@ public class UnrealProjectAnalyzer : ModuleRules
             // HTTP Server
             "HTTP",
             "HTTPServer",
-            
+
             // JSON
             "Json",
             "JsonUtilities",
-            
+
             // Editor APIs
             "UnrealEd",
             "BlueprintGraph",
             "Kismet",
-            
+
             // Asset Registry
             "AssetRegistry",
-            
+
             // Python integration
             "PythonScriptPlugin",
+
+            // Socket probing (to detect MCP server readiness)
+            "Sockets",
 
             // UI / Editor integration (toolbar + settings)
             "ToolMenus",

@@ -38,6 +38,17 @@
 - **Unreal Engine 5.3+**
 - **[uv](https://docs.astral.sh/uv/)** - Python 包管理器（必需）
 
+### 0. 首次使用：建议先手动同步依赖（强烈推荐）
+
+插件支持在 Editor 内自动安装依赖，但**第一次使用**强烈建议你先在 Editor 外手动跑一次（更稳定，也更容易排错）：
+
+```powershell
+cd <PluginRoot>\Content\Python
+uv sync
+```
+
+执行完成后再打开 Unreal Editor，并点击 Start MCP Server。
+
 ### 1. 安装插件
 
 将 `UnrealProjectAnalyzer` 文件夹复制到你的 Unreal 项目的 `Plugins/` 目录：
@@ -71,7 +82,7 @@ which uv
 ### 3. 启动 MCP 服务器
 
 1. 在 Unreal Editor 菜单：**Tools → Unreal Project Analyzer → Start MCP Server**
-2. 检查 Output Log 是否显示：`LogMcpServer: MCP Server process started`
+2. 检查 Output Log / 通知是否显示：`MCP Server is running`
 3. 通过 **Tools → Unreal Project Analyzer → Copy MCP URL** 复制 MCP 地址
 
 ### 4. 连接 Cursor
@@ -134,8 +145,8 @@ uv run unreal-analyzer -- \
 ┌──────────────────────────────────────────────────────────────────┐
 │            UnrealProjectAnalyzer 插件 (Editor 内运行)             │
 │  ┌─────────────────────────┐  ┌────────────────────────────────┐ │
-│  │   HTTP Server (:8080)   │  │   MCP 启动器 (uv 进程)          │ │
-│  │   蓝图/资产 API          │  │   从 Editor 自动启动            │ │
+│  │   HTTP Server (:8080)   │  │   MCP Server (UE Python)       │ │
+│  │   蓝图/资产 API          │  │   由 AnalyzerSubsystem 管理     │ │
 │  │   /health 健康检查       │  │                                │ │
 │  └─────────────────────────┘  └────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘

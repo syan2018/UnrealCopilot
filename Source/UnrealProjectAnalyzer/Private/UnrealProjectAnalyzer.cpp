@@ -8,7 +8,7 @@
 #include "Misc/Paths.h"
 
 #include "UnrealAnalyzerHttpRoutes.h"
-#include "UnrealProjectAnalyzerMcpLauncher.h"
+#include "AnalyzerSubsystem.h"
 #include "UnrealProjectAnalyzerSettings.h"
 
 #include "Interfaces/IPluginManager.h"
@@ -28,31 +28,13 @@ void FUnrealProjectAnalyzerModule::StartupModule()
 {
     UE_LOG(LogTemp, Log, TEXT("UnrealProjectAnalyzer: Starting module..."));
 
-    McpLauncher = new FUnrealProjectAnalyzerMcpLauncher();
-    
     // Initialize HTTP server
     InitializeHttpServer();
-    
-    // Initialize Python bridge
-    InitializePythonBridge();
 
     // Editor integration
     RegisterSettings();
     RegisterMenus();
 
-    // 注册 Ticker 用于读取 MCP Server 子进程输出（每 0.1 秒一次）
-    TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(
-        FTickerDelegate::CreateRaw(this, &FUnrealProjectAnalyzerModule::Tick),
-        0.1f
-    );
-
-    // Optional auto-start (only for HTTP/SSE transports; stdio is typically Cursor-managed)
-    const UUnrealProjectAnalyzerSettings* Settings = GetDefault<UUnrealProjectAnalyzerSettings>();
-    if (Settings && Settings->bAutoStartMcpServer && Settings->Transport != EUnrealAnalyzerMcpTransport::Stdio)
-    {
-        StartMcpServer();
-    }
-    
     UE_LOG(LogTemp, Log, TEXT("UnrealProjectAnalyzer: Module started successfully. HTTP API available at port %d"), HttpPort);
 }
 
@@ -60,23 +42,17 @@ void FUnrealProjectAnalyzerModule::ShutdownModule()
 {
     UE_LOG(LogTemp, Log, TEXT("UnrealProjectAnalyzer: Shutting down module..."));
 
-    // 取消注册 Ticker
-    if (TickDelegateHandle.IsValid())
+    // Stop MCP server via Subsystem
+    if (UAnalyzerSubsystem::Get())
     {
-        FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
-        TickDelegateHandle.Reset();
+        UAnalyzerSubsystem::Get()->StopAnalyzer();
     }
 
     UnregisterMenus();
     UnregisterSettings();
 
-    StopMcpServer();
-    delete McpLauncher;
-    McpLauncher = nullptr;
-    
-    ShutdownPythonBridge();
     ShutdownHttpServer();
-    
+
     UE_LOG(LogTemp, Log, TEXT("UnrealProjectAnalyzer: Module shutdown complete."));
 }
 
@@ -119,51 +95,6 @@ void FUnrealProjectAnalyzerModule::ShutdownHttpServer()
     {
         // Routes will be automatically cleaned up
         HttpRouter.Reset();
-    }
-}
-
-void FUnrealProjectAnalyzerModule::InitializePythonBridge()
-{
-    // Check if Python plugin is available
-    IPythonScriptPlugin* PythonPlugin = FModuleManager::GetModulePtr<IPythonScriptPlugin>("PythonScriptPlugin");
-    
-    if (!PythonPlugin)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("UnrealProjectAnalyzer: PythonScriptPlugin not available. Python bridge disabled."));
-        return;
-    }
-    
-    // Get the path to our Python bridge script (do NOT hardcode ProjectPluginsDir / plugin folder name)
-    TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealProjectAnalyzer"));
-    const FString PluginDir = Plugin.IsValid() ? Plugin->GetBaseDir() : FPaths::ProjectPluginsDir();
-    FString BridgeScriptPath = FPaths::Combine(PluginDir, TEXT("Content/Python/bridge_server.py"));
-    
-    // Check if script exists
-    if (!FPaths::FileExists(BridgeScriptPath))
-    {
-        UE_LOG(LogTemp, Warning, TEXT("UnrealProjectAnalyzer: Python bridge script not found at %s"), *BridgeScriptPath);
-        return;
-    }
-    
-    // Execute the bridge script
-    // Note: In production, we'd want more robust error handling
-    // Windows paths contain backslashes; escape them for Python string literal.
-    BridgeScriptPath.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
-    FString PythonCommand = FString::Printf(TEXT("exec(open(r'%s').read())"), *BridgeScriptPath);
-    
-    // Execute the Python script (best-effort)
-    PythonPlugin->ExecPythonCommand(*PythonCommand);
-    
-    bPythonBridgeInitialized = true;
-    UE_LOG(LogTemp, Log, TEXT("UnrealProjectAnalyzer: Python bridge initialized."));
-}
-
-void FUnrealProjectAnalyzerModule::ShutdownPythonBridge()
-{
-    if (bPythonBridgeInitialized)
-    {
-        // TODO: Send shutdown signal to Python bridge
-        bPythonBridgeInitialized = false;
     }
 }
 
@@ -256,7 +187,7 @@ void FUnrealProjectAnalyzerModule::RegisterMenus()
             Section.AddMenuEntry(
                 "UnrealProjectAnalyzer.StartMcp",
                 LOCTEXT("StartMcp_Label", "Start MCP Server"),
-                LOCTEXT("StartMcp_Tooltip", "Start MCP Server via uv (HTTP/SSE transport recommended)."),
+                LOCTEXT("StartMcp_Tooltip", "Start MCP Server in UE's Python environment (HTTP/SSE transport recommended)."),
                 FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Play"),
                 FUIAction(
                     FExecuteAction::CreateRaw(this, &FUnrealProjectAnalyzerModule::StartMcpServer),
@@ -268,7 +199,7 @@ void FUnrealProjectAnalyzerModule::RegisterMenus()
             Section.AddMenuEntry(
                 "UnrealProjectAnalyzer.StopMcp",
                 LOCTEXT("StopMcp_Label", "Stop MCP Server"),
-                LOCTEXT("StopMcp_Tooltip", "Stop MCP Server process."),
+                LOCTEXT("StopMcp_Tooltip", "Stop MCP Server running in UE's Python environment."),
                 FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Stop"),
                 FUIAction(
                     FExecuteAction::CreateRaw(this, &FUnrealProjectAnalyzerModule::StopMcpServer),
@@ -313,74 +244,87 @@ void FUnrealProjectAnalyzerModule::UnregisterMenus()
 
 bool FUnrealProjectAnalyzerModule::CanStartMcpServer() const
 {
-    return McpLauncher && !McpLauncher->IsRunning();
+    UAnalyzerSubsystem* Subsystem = UAnalyzerSubsystem::Get();
+    return Subsystem && !Subsystem->IsAnalyzerRunning() && !Subsystem->IsAnalyzerStarting();
 }
 
 bool FUnrealProjectAnalyzerModule::CanStopMcpServer() const
 {
-    return McpLauncher && McpLauncher->IsRunning();
+    UAnalyzerSubsystem* Subsystem = UAnalyzerSubsystem::Get();
+    return Subsystem && (Subsystem->IsAnalyzerRunning() || Subsystem->IsAnalyzerStarting());
 }
 
 void FUnrealProjectAnalyzerModule::StartMcpServer()
 {
-    if (!McpLauncher)
+    UAnalyzerSubsystem* Subsystem = UAnalyzerSubsystem::Get();
+    if (!Subsystem)
     {
+        UE_LOG(LogTemp, Error, TEXT("UnrealProjectAnalyzer: AnalyzerSubsystem not available"));
         return;
     }
 
-    const UUnrealProjectAnalyzerSettings* Settings = GetDefault<UUnrealProjectAnalyzerSettings>();
-    if (!Settings)
+    // Heuristic: first start may need to install/sync dependencies, which can take minutes.
+    bool bMayNeedDependencySync = false;
+    if (IPluginManager::Get().FindPlugin(TEXT("UnrealProjectAnalyzer")))
     {
-        return;
+        const FString PluginDir = IPluginManager::Get().FindPlugin(TEXT("UnrealProjectAnalyzer"))->GetBaseDir();
+        const FString PythonDir = FPaths::Combine(PluginDir, TEXT("Content/Python"));
+        const FString VenvDir = FPaths::Combine(PythonDir, TEXT(".venv"));
+
+        if (!FPaths::DirectoryExists(VenvDir))
+        {
+            bMayNeedDependencySync = true;
+        }
     }
 
-    const bool bOk = McpLauncher->Start(*Settings);
-    if (!bOk)
-    {
-        const FText Msg = LOCTEXT("McpStartFailed", "Failed to start MCP Server. Please ensure `uv` is installed and configured in settings.");
-        FMessageDialog::Open(EAppMsgType::Ok, Msg);
-        UE_LOG(LogTemp, Error, TEXT("UnrealProjectAnalyzer: Failed to start MCP server. cmd=%s"), *McpLauncher->GetLastCommandLine());
-        return;
-    }
+    Subsystem->StartAnalyzer();
 
-    const FString Url = McpLauncher->GetMcpUrl();
-    UE_LOG(LogTemp, Log, TEXT("UnrealProjectAnalyzer: MCP server started. %s"), *McpLauncher->GetLastCommandLine());
-    if (!Url.IsEmpty())
-    {
-        UE_LOG(LogTemp, Log, TEXT("UnrealProjectAnalyzer: MCP URL: %s"), *Url);
-    }
+    const FString Url = GetMcpUrl();
+    UE_LOG(LogTemp, Log, TEXT("UnrealProjectAnalyzer: MCP server start requested"));
+    // NOTE: Don't log the URL here. We only log/show it after the server is confirmed running.
 
-    FNotificationInfo Info(LOCTEXT("McpStarted", "MCP Server started"));
-    Info.ExpireDuration = 3.0f;
+    // Immediate user feedback: starting
+    FNotificationInfo Info(
+        bMayNeedDependencySync
+            ? LOCTEXT("McpStartingFirstTime", "MCP Server starting... (first start may sync Python deps; check Output Log)")
+            : LOCTEXT("McpStarting", "MCP Server starting... (check Output Log)")
+    );
+    Info.ExpireDuration = 5.0f;
     FSlateNotificationManager::Get().AddNotification(Info);
+
+    // Start polling for readiness to provide accurate status
+    if (McpStartPollHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(McpStartPollHandle);
+        McpStartPollHandle.Reset();
+    }
+    McpStartPollDeadlineSeconds = FPlatformTime::Seconds() + (bMayNeedDependencySync ? 180.0 : 12.0);
+    McpStartPollHandle = FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateRaw(this, &FUnrealProjectAnalyzerModule::TickMcpStartPoll),
+        0.25f
+    );
 }
 
 void FUnrealProjectAnalyzerModule::StopMcpServer()
 {
-    if (!McpLauncher)
+    UAnalyzerSubsystem* Subsystem = UAnalyzerSubsystem::Get();
+    if (!Subsystem)
     {
         return;
     }
 
-    if (McpLauncher->IsRunning())
-    {
-        McpLauncher->Stop();
-        UE_LOG(LogTemp, Log, TEXT("UnrealProjectAnalyzer: MCP server stopped."));
+    Subsystem->StopAnalyzer();
 
-        FNotificationInfo Info(LOCTEXT("McpStopped", "MCP Server stopped"));
-        Info.ExpireDuration = 3.0f;
-        FSlateNotificationManager::Get().AddNotification(Info);
-    }
+    UE_LOG(LogTemp, Log, TEXT("UnrealProjectAnalyzer: MCP server stop requested"));
+
+    FNotificationInfo Info(LOCTEXT("McpStopRequested", "MCP Server stop requested (check Output Log)"));
+    Info.ExpireDuration = 4.0f;
+    FSlateNotificationManager::Get().AddNotification(Info);
 }
 
 void FUnrealProjectAnalyzerModule::CopyMcpUrlToClipboard() const
 {
-    if (!McpLauncher || !McpLauncher->IsRunning())
-    {
-        return;
-    }
-
-    const FString Url = McpLauncher->GetMcpUrl();
+    const FString Url = GetMcpUrl();
     if (Url.IsEmpty())
     {
         FNotificationInfo Info(LOCTEXT("McpUrlEmpty", "MCP URL is empty (transport is likely stdio)."));
@@ -395,6 +339,25 @@ void FUnrealProjectAnalyzerModule::CopyMcpUrlToClipboard() const
     FSlateNotificationManager::Get().AddNotification(Info);
 }
 
+FString FUnrealProjectAnalyzerModule::GetMcpUrl() const
+{
+    const UUnrealProjectAnalyzerSettings* Settings = GetDefault<UUnrealProjectAnalyzerSettings>();
+    if (!Settings)
+    {
+        return TEXT("");
+    }
+
+    if (Settings->Transport == EUnrealAnalyzerMcpTransport::Stdio)
+    {
+        return TEXT("");
+    }
+
+    return FString::Printf(TEXT("http://%s:%d%s"),
+        *Settings->McpHost,
+        Settings->McpPort,
+        Settings->Transport == EUnrealAnalyzerMcpTransport::Http ? *Settings->McpPath : TEXT(""));
+}
+
 void FUnrealProjectAnalyzerModule::OpenPluginSettings() const
 {
     ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
@@ -404,14 +367,55 @@ void FUnrealProjectAnalyzerModule::OpenPluginSettings() const
     }
 }
 
-bool FUnrealProjectAnalyzerModule::Tick(float DeltaTime)
+bool FUnrealProjectAnalyzerModule::TickMcpStartPoll(float DeltaTime)
 {
-    // 调用 McpLauncher 的 Tick 来读取子进程输出
-    if (McpLauncher)
+    UAnalyzerSubsystem* Subsystem = UAnalyzerSubsystem::Get();
+    const double Now = FPlatformTime::Seconds();
+
+    if (!Subsystem)
     {
-        McpLauncher->Tick();
+        McpStartPollHandle.Reset();
+        return false;
     }
-    return true;  // 返回 true 表示继续 tick
+
+    if (Subsystem->IsAnalyzerRunning())
+    {
+        const FString Url = GetMcpUrl();
+        if (!Url.IsEmpty())
+        {
+            UE_LOG(LogTemp, Log, TEXT("UnrealProjectAnalyzer: MCP server ready at %s"), *Url);
+        }
+
+        FNotificationInfo Info(LOCTEXT("McpReady", "MCP Server is running"));
+        Info.ExpireDuration = 3.0f;
+        FSlateNotificationManager::Get().AddNotification(Info);
+
+        McpStartPollHandle.Reset();
+        return false;
+    }
+
+    if (!Subsystem->IsAnalyzerStarting())
+    {
+        FNotificationInfo Info(LOCTEXT("McpStartFailed", "MCP Server failed to start. Check Output Log."));
+        Info.ExpireDuration = 6.0f;
+        FSlateNotificationManager::Get().AddNotification(Info);
+
+        McpStartPollHandle.Reset();
+        return false;
+    }
+
+    if (Now > McpStartPollDeadlineSeconds)
+    {
+        FNotificationInfo Info(LOCTEXT("McpStartTimeout", "MCP Server not ready yet (startup timed out). Check Output Log."));
+        Info.ExpireDuration = 6.0f;
+        FSlateNotificationManager::Get().AddNotification(Info);
+
+        McpStartPollHandle.Reset();
+        return false;
+    }
+
+    // keep polling
+    return true;
 }
 
 #undef LOCTEXT_NAMESPACE

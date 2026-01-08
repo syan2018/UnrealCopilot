@@ -17,9 +17,10 @@ enum class EUnrealAnalyzerMcpTransport : uint8
 /**
  * UnrealProjectAnalyzer settings (Editor per-project).
  *
- * 目标：
- * - 允许用户在 UE 内配置 “uv + MCP Server” 启动参数
- * - 不要求修改 UE 自带 Python 环境：MCP Server 始终作为外部进程运行
+ * 运行方式：
+ * - MCP Server 在 UE 内置 Python 环境中运行（类似 UnrealRemoteMCP）
+ * - 依赖通过 uv sync 自动管理到 Content/Python/.venv（启动时自动加入 sys.path）
+ * - Subsystem 负责管理 MCP Server 的生命周期
  */
 UCLASS(Config=EditorPerProjectUserSettings, DefaultConfig)
 class UUnrealProjectAnalyzerSettings : public UObject
@@ -27,21 +28,9 @@ class UUnrealProjectAnalyzerSettings : public UObject
 	GENERATED_BODY()
 
 public:
-	/** 是否在 Editor 启动后自动拉起 MCP Server（仅当 transport != stdio） */
+	/** 是否在 Editor 启动后自动启动 MCP Server（仅在 UE 进程内运行） */
 	UPROPERTY(EditAnywhere, Config, Category="MCP|Launcher")
 	bool bAutoStartMcpServer = false;
-
-	/** uv 可执行文件路径；为空则使用系统 PATH 中的 `uv` */
-	UPROPERTY(EditAnywhere, Config, Category="MCP|Launcher")
-	FString UvExecutable = TEXT("uv");
-
-	/** MCP Server 的工作目录（默认：插件根目录，pyproject.toml 所在位置） */
-	UPROPERTY(EditAnywhere, Config, Category="MCP|Launcher")
-	FString McpServerDirectory = TEXT("");
-
-	/** 是否将 MCP Server 的输出打印到 UE Output Log */
-	UPROPERTY(EditAnywhere, Config, Category="MCP|Launcher")
-	bool bCaptureServerOutput = true;
 
 	/** MCP transport：stdio/http/sse */
 	UPROPERTY(EditAnywhere, Config, Category="MCP|Transport")
@@ -77,5 +66,21 @@ public:
 	/** 额外传给 unreal-analyzer 的参数（高级） */
 	UPROPERTY(EditAnywhere, Config, Category="MCP|Advanced")
 	FString ExtraArgs = TEXT("");
+
+	// ============================================================================
+	// Launcher Settings (用于外部进程启动方式)
+	// ============================================================================
+
+	/** uv 可执行文件路径（默认：系统 PATH 中的 uv） */
+	UPROPERTY(EditAnywhere, Config, Category="MCP|Launcher")
+	FString UvExecutable = TEXT("");
+
+	/** MCP Server 目录（默认：插件根目录） */
+	UPROPERTY(EditAnywhere, Config, Category="MCP|Launcher")
+	FString McpServerDirectory = TEXT("");
+
+	/** 是否捕获服务器输出到日志 */
+	UPROPERTY(EditAnywhere, Config, Category="MCP|Launcher")
+	bool bCaptureServerOutput = false;
 };
 
