@@ -38,6 +38,8 @@ from typing import Optional
 _analyzer_mcp = None
 _analyzer_context_id: Optional[str] = None
 _analyzer_server_thread = None
+_analyzer_server_shutdown_event = None  # threading.Event for graceful shutdown
+_analyzer_uvicorn_server = None  # uvicorn.Server instance for HTTP/SSE
 _tools_registered = False
 _stderr_redirected = False
 _original_stderr = None
@@ -299,46 +301,78 @@ def start_analyzer_server(
             pass
 
         # Start the server in a background thread
+        import threading
+        global _analyzer_server_thread, _analyzer_server_shutdown_event, _analyzer_uvicorn_server
+        
+        if _analyzer_server_thread is not None and _analyzer_server_thread.is_alive():
+            unreal.log_warning("[UnrealProjectAnalyzer] MCP server thread already running")
+            return True
+
+        # Create shutdown event for graceful stop
+        shutdown_event = threading.Event()
+        _analyzer_server_shutdown_event = shutdown_event
+
         def run_server():
+            global _analyzer_uvicorn_server
             try:
-                # Prefer suppressing FastMCP banner if supported.
-                if transport == "stdio":
+                # For HTTP/SSE, we try to get access to the uvicorn server for graceful shutdown
+                if transport in ("http", "sse"):
+                    try:
+                        # Try to run with uvicorn server instance capture
+                        import uvicorn
+                        from fastmcp.server.http import create_sse_transport, create_streamable_http_transport
+                        
+                        if transport == "http":
+                            asgi_app = create_streamable_http_transport(mcp._mcp_server, path=path)
+                        else:
+                            asgi_app = create_sse_transport(mcp._mcp_server)
+                        
+                        config = uvicorn.Config(
+                            asgi_app,
+                            host=host,
+                            port=port,
+                            log_level="warning",
+                        )
+                        server = uvicorn.Server(config)
+                        _analyzer_uvicorn_server = server
+                        
+                        # Run server (blocks until shutdown)
+                        server.run()
+                    except Exception as e:
+                        # Fallback to mcp.run() if custom setup fails
+                        unreal.log_warning(f"[UnrealProjectAnalyzer] Custom uvicorn setup failed, using mcp.run(): {e}")
+                        if transport == "http":
+                            try:
+                                mcp.run(transport="http", host=host, port=port, path=path, show_banner=False)
+                            except TypeError:
+                                mcp.run(transport="http", host=host, port=port, path=path)
+                        else:
+                            try:
+                                mcp.run(transport="sse", host=host, port=port, show_banner=False)
+                            except TypeError:
+                                mcp.run(transport="sse", host=host, port=port)
+                elif transport == "stdio":
                     try:
                         mcp.run(show_banner=False)
                     except TypeError:
                         mcp.run()
-                elif transport == "http":
-                    try:
-                        mcp.run(transport="http", host=host, port=port, path=path, show_banner=False)
-                    except TypeError:
-                        mcp.run(transport="http", host=host, port=port, path=path)
-                elif transport == "sse":
-                    try:
-                        mcp.run(transport="sse", host=host, port=port, show_banner=False)
-                    except TypeError:
-                        mcp.run(transport="sse", host=host, port=port)
                 else:
                     unreal.log_error(f"[UnrealProjectAnalyzer] Unknown transport: {transport}")
             except Exception as e:
                 unreal.log_error(f"[UnrealProjectAnalyzer] MCP server crashed: {e}")
                 import traceback
-
                 unreal.log_error(traceback.format_exc())
+            finally:
+                # Clear server reference when done
+                _analyzer_uvicorn_server = None
 
-        import threading
-        global _analyzer_server_thread
-        if _analyzer_server_thread is not None and _analyzer_server_thread.is_alive():
-            unreal.log_warning("[UnrealProjectAnalyzer] MCP server thread already running")
-            return True
-
-        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread = threading.Thread(target=run_server, daemon=True, name="MCP-Server")
         server_thread.start()
 
         _analyzer_server_thread = server_thread
         # Legacy storage (best-effort)
         try:
             import __main__
-
             __main__._analyzer_server_thread = server_thread
         except Exception:
             pass
@@ -354,52 +388,91 @@ def start_analyzer_server(
 
 
 def stop_analyzer_server():
-    """Stop the MCP analyzer server."""
+    """
+    Stop the MCP analyzer server.
+    
+    For HTTP/SSE transport, attempts graceful shutdown via uvicorn.
+    For stdio transport, the daemon thread will terminate with the process.
+    """
     try:
-        global _analyzer_server_thread
-        if _analyzer_server_thread is not None:
-            unreal.log("[UnrealProjectAnalyzer] Stopping MCP server...")
-            # Note: The server thread is a daemon thread, so it will be terminated
-            # when the main process exits. For clean shutdown, you'd need to implement
-            # proper shutdown handling in the MCP server.
-            _analyzer_server_thread = None
+        global _analyzer_server_thread, _analyzer_server_shutdown_event, _analyzer_uvicorn_server
+        
+        if _analyzer_server_thread is None or not _analyzer_server_thread.is_alive():
+            unreal.log("[UnrealProjectAnalyzer] MCP server is not running")
+            return False
+        
+        unreal.log("[UnrealProjectAnalyzer] Stopping MCP server...")
+        
+        # Signal shutdown event
+        if _analyzer_server_shutdown_event is not None:
+            _analyzer_server_shutdown_event.set()
+        
+        # Try to gracefully shutdown uvicorn server (HTTP/SSE)
+        if _analyzer_uvicorn_server is not None:
             try:
-                import __main__
-
-                if hasattr(__main__, "_analyzer_server_thread"):
-                    delattr(__main__, "_analyzer_server_thread")
-            except Exception:
-                pass
-            unreal.log("[UnrealProjectAnalyzer] MCP server stopped")
-            return True
-        return False
+                _analyzer_uvicorn_server.should_exit = True
+                unreal.log("[UnrealProjectAnalyzer] Signaled uvicorn server to exit")
+            except Exception as e:
+                unreal.log_warning(f"[UnrealProjectAnalyzer] Failed to signal uvicorn shutdown: {e}")
+        
+        # Wait briefly for graceful shutdown
+        if _analyzer_server_thread.is_alive():
+            _analyzer_server_thread.join(timeout=2.0)
+            
+            if _analyzer_server_thread.is_alive():
+                unreal.log_warning("[UnrealProjectAnalyzer] Server thread still running after timeout (daemon thread will exit with process)")
+            else:
+                unreal.log("[UnrealProjectAnalyzer] Server thread stopped gracefully")
+        
+        # Clean up references
+        _analyzer_server_thread = None
+        _analyzer_server_shutdown_event = None
+        _analyzer_uvicorn_server = None
+        
+        try:
+            import __main__
+            if hasattr(__main__, "_analyzer_server_thread"):
+                delattr(__main__, "_analyzer_server_thread")
+        except Exception:
+            pass
+        
+        unreal.log("[UnrealProjectAnalyzer] MCP server stopped")
+        return True
+        
     except Exception as e:
         unreal.log_error(f"[UnrealProjectAnalyzer] Error stopping MCP server: {e}")
+        import traceback
+        unreal.log_error(traceback.format_exc())
         return False
 
 
 def get_server_status():
     """Get the current status of the MCP server."""
     try:
-        global _analyzer_server_thread, _analyzer_context_id
+        global _analyzer_server_thread, _analyzer_context_id, _analyzer_uvicorn_server
         thread = _analyzer_server_thread
         if thread is None:
             # Fallback to legacy storage
             try:
                 import __main__
-
                 thread = getattr(__main__, "_analyzer_server_thread", None)
             except Exception:
                 thread = None
 
-        if thread is not None:
-            return {
-                "running": thread.is_alive(),
-                "context_id": _analyzer_context_id,
-            }
+        is_running = thread is not None and thread.is_alive()
+        
+        # Additional check: if uvicorn server exists, check its state
+        uvicorn_active = False
+        if _analyzer_uvicorn_server is not None:
+            try:
+                uvicorn_active = _analyzer_uvicorn_server.started and not _analyzer_uvicorn_server.should_exit
+            except Exception:
+                pass
+
         return {
-            "running": False,
-            "context_id": None,
+            "running": is_running,
+            "context_id": _analyzer_context_id,
+            "uvicorn_active": uvicorn_active,
         }
     except Exception as e:
         unreal.log_error(f"[UnrealProjectAnalyzer] Error getting server status: {e}")

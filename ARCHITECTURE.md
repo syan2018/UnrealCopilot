@@ -2,17 +2,10 @@
 
 ## 概述
 
-UnrealProjectAnalyzer 现在使用 **UE 内置 Python 环境** 运行 MCP Server，类似于 UnrealRemoteMCP 的架构。这提供了更好的集成和更简化的环境管理。
+UnrealProjectAnalyzer 使用 **UE 内置 Python 环境** 运行 MCP Server，类似于 UnrealRemoteMCP 的架构。这提供了更好的集成和更简化的环境管理。
 
-## 架构变更
+## 架构特点
 
-### 之前的架构（已废弃）
-- 通过 `uv run` 启动独立的 Python 进程
-- 完全隔离的环境，通过 HTTP API 与 UE 通信
-- 需要手动管理子进程生命周期
-- MCP 代码在 `Mcp/src/unreal_analyzer/`
-
-### 新架构（当前）
 - MCP Server 在 UE 内置 Python 环境中运行
 - 所有 Python 代码统一放在 `Content/Python/` 目录下
 - 依赖通过 `uv sync` 自动管理到 `Content/Python/.venv`（启动时自动加入 `sys.path`）
@@ -40,10 +33,6 @@ UnrealProjectAnalyzer 现在使用 **UE 内置 Python 环境** 运行 MCP Server
 - `tools/`: MCP 工具实现（blueprint, cpp, unified, cross_domain）
 - `cpp_analyzer/`: C++ 代码分析器（基于 tree-sitter）
 - `ue_client/`: UE 插件 HTTP 客户端
-
-#### `Content/Python/bridge_server.py`
-- Python Bridge API（保留用于向后兼容）
-- 提供 UE 原生 API 访问
 
 ### C++ 组件
 
