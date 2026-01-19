@@ -14,9 +14,9 @@ description: "MCP 工具设计原则和完整工具清单"
 4. 返回结构化数据，包含足够上下文
 5. 错误信息友好，帮助用户定位问题
 
-## 工具清单（v0.3.1，共 8 个）
+## 工具清单（v0.4.0，共 11 个）
 
-### 核心工具（4 个）
+### 分析工具（8 个）
 
 | 工具 | 参数 | 用途 |
 |------|------|------|
@@ -24,15 +24,18 @@ description: "MCP 工具设计原则和完整工具清单"
 | `get_hierarchy` | `name`, `domain`, `scope` | 获取继承层次 |
 | `get_references` | `path`, `domain`, `scope`, `direction` | 获取引用关系 |
 | `get_details` | `path`, `domain`, `scope` | 获取详细信息 |
-
-### 特殊工具（4 个）
-
-| 工具 | 参数 | 用途 |
-|------|------|------|
 | `get_blueprint_graph` | `bp_path`, `graph_name`, `format` | 蓝图节点图（Mermaid/摘要/JSON） |
 | `detect_ue_patterns` | `file_path`, `format` | UE 宏检测（详细/摘要） |
 | `trace_reference_chain` | `start_asset`, `max_depth`, `direction` | 跨域引用链追踪 |
 | `find_cpp_class_usage` | `cpp_class`, `scope`, `max_results` | C++ 类使用查找 |
+
+### 技能工具（3 个，v0.4.0 新增）
+
+| 工具 | 参数 | 用途 |
+|------|------|------|
+| `list_unreal_skill` | `query?`, `include_hidden?` | 列出可用技能 |
+| `read_unreal_skill` | `skill_name`, `path?` | 读取技能文档/脚本 |
+| `run_unreal_skill` | `skill_name?`, `script?`, `args?`, `python?` | 执行技能脚本或内联 Python |
 
 ## 参数设计原则
 
@@ -46,7 +49,7 @@ description: "MCP 工具设计原则和完整工具清单"
 | `format` | `mermaid`, `summary`, `json` / `detailed`, `summary` | 输出格式 |
 | `type_filter` | 字符串 | 类型过滤（合并了 asset_type 和 class_filter） |
 
-### Scope 语义（v0.3.2）
+### Scope 语义
 
 | Scope | C++ 范围 | Blueprint/Asset 范围 |
 |-------|----------|---------------------|
@@ -65,6 +68,41 @@ description: "MCP 工具设计原则和完整工具清单"
 - `include_interfaces` → 内部默认 `true`
 - `include_cpp` → 内部默认 `true`
 - `aggregate_results` → 内部默认 `true`
+
+## Skill 技能系统
+
+### 设计理念
+
+Skill 是可发现、有文档、可执行的编辑器能力：
+- **可发现**：`list_unreal_skill` 返回技能列表（name, description, tags）
+- **有文档**：`read_unreal_skill` 返回 SKILL.md + 目录树
+- **可执行**：`run_unreal_skill` 执行脚本或内联 Python
+
+### 技能包结构
+
+```
+skills/<skill_name>/
+├── SKILL.md              # 技能说明（YAML 题头 + Markdown）
+├── scripts/              # 可执行脚本
+│   └── *.py
+└── docs/                 # 详细文档（可选）
+    └── *.md
+```
+
+### 执行模式
+
+1. **脚本模式**：`skill_name` + `script` → 执行 `skills/<skill_name>/scripts/<script>`
+2. **内联模式**：`python` → 直接执行内联代码
+
+### CppSkillApiSubsystem 原语
+
+| 分类 | 操作 |
+|------|------|
+| **Asset** | RenameAsset, DuplicateAsset, DeleteAsset, SaveAsset |
+| **Blueprint** | CreateBlueprint, CompileBlueprint, SaveBlueprint, SetBlueprintCDOPropertyByString, AddBlueprintComponent, RemoveBlueprintComponent |
+| **World** | LoadMap, SpawnActorByClassPath, FindActorByName, DestroyActorByName, SetActorPropertyByString, SetActorTransformByName |
+| **Editor** | ListDirtyPackages, SaveDirtyPackages, UndoLastTransaction, RedoLastTransaction |
+| **Validation** | CompileAllBlueprintsSummary |
 
 ## 典型调用流程
 
@@ -94,14 +132,25 @@ await search(query="SK_Mannequin", domain="asset")
 await trace_reference_chain(start_asset="/Game/.../SK_Mannequin", max_depth=3)
 ```
 
-### 场景：分析 C++ 类暴露
+### 场景：使用 Skill 批量操作
 
 ```python
-# 详细模式：返回所有 UE 宏
-await detect_ue_patterns(file_path="Source/MyGame/MyActor.h")
+# 1. 发现可用技能
+await list_unreal_skill(query="asset")
 
-# 摘要模式：只返回 Blueprint 暴露的 API
-await detect_ue_patterns(file_path="Source/MyGame/MyActor.h", format="summary")
+# 2. 阅读技能文档
+await read_unreal_skill(skill_name="cpp_asset_api")
+
+# 3. 阅读详细 API
+await read_unreal_skill(skill_name="cpp_asset_api", path="docs/overview.md")
+
+# 4. 执行内联 Python
+await run_unreal_skill(python="""
+import unreal
+api = unreal.get_editor_subsystem(unreal.CppSkillApiSubsystem)
+success, error = api.rename_asset("/Game/Old", "/Game/New")
+RESULT = {"success": success, "error": error}
+""")
 ```
 
 ## HTTP API（UE 插件）
@@ -123,12 +172,12 @@ GET /analysis/job/result?id=...       → 异步任务结果
 | v0.2.0 | 22 | 原始工具 + unified |
 | v0.3.0 | 9 | 精简：unified + 必要特殊工具 |
 | v0.3.1 | 8 | 进一步精简：合并 detect_ue_patterns + get_cpp_blueprint_exposure |
+| v0.4.0 | 11 | 新增 Skill 工具：list/read/run_unreal_skill |
 
-### v0.3.1 参数精简
+### v0.4.0 新增
 
-| 工具 | 精简前参数数 | 精简后参数数 |
-|------|-------------|-------------|
-| `search` | 10 | 5 |
-| `get_hierarchy` | 4 | 3 |
-| `find_cpp_class_usage` | 5 | 3 |
-| `get_blueprint_graph` | 3 | 3 |
+- `list_unreal_skill`: 发现可用技能
+- `read_unreal_skill`: 读取技能文档
+- `run_unreal_skill`: 执行技能脚本或内联 Python
+- `CppSkillApiSubsystem`: C++ 编辑器原语（Asset/Blueprint/World/Editor/Validation）
+- 事件驱动 MCP 生命周期管理

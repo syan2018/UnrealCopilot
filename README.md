@@ -2,9 +2,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-MCP Server for analyzing Unreal Engine 5 projects - Blueprint, Asset, and C++ source code.
+MCP Server for analyzing **and editing** Unreal Engine 5 projects - Blueprint, Asset, C++ source code, and executable Skills.
 
-> **Goal**: Let AI understand the complete picture of an Unreal project by tracing reference chains across Blueprint ↔ C++ ↔ Asset boundaries.
+> **Goal**: Let AI understand the complete picture of an Unreal project by tracing reference chains across Blueprint ↔ C++ ↔ Asset boundaries, **and execute editor operations via Skills**.
 
 **[中文文档](README_CN.md)**
 
@@ -15,10 +15,24 @@ MCP Server for analyzing Unreal Engine 5 projects - Blueprint, Asset, and C++ so
 - **C++ Source Analysis**: Class structure, UPROPERTY/UFUNCTION detection (tree-sitter based)
 - **Cross-Domain Queries**: Trace complete reference chains across all domains
 - **Editor Integration**: Start/Stop MCP Server directly from Unreal Editor menu
-- **Scope Control (v0.2.0)**: Search project-only, engine-only, or both
-- **Unified Search (v0.2.0)**: grep-like interface across all domains
+- **Scope Control**: Search project-only, engine-only, or both
+- **Unified Search**: grep-like interface across all domains
+- **🆕 Skill System (v0.4.0)**: Discoverable, readable, executable editor capabilities
 
-## What's New in v0.3.1
+## What's New in v0.4.0
+
+- **Skill System**: 3 new MCP tools for discovering and executing editor capabilities
+  - `list_unreal_skill` - Discover available skills
+  - `read_unreal_skill` - Read skill documentation and scripts
+  - `run_unreal_skill` - Execute skill scripts or inline Python
+- **CppSkillApiSubsystem**: C++ editor primitives (Asset/Blueprint/World/Editor/Validation)
+- **Event-Driven MCP Lifecycle**: Python→C++ notifications replace unreliable port probing
+- **Renamed**: `UAnalyzerSubsystem` → `UMcpServerSubsystem` (reflects actual purpose)
+
+### Previous Changes
+
+<details>
+<summary>v0.3.x</summary>
 
 - **Further Simplified**: Reduced to **8 tools** (4 unified + 4 specialized)
 - **Minimal Parameters**: Removed redundant parameters for lower cognitive load
@@ -26,10 +40,7 @@ MCP Server for analyzing Unreal Engine 5 projects - Blueprint, Asset, and C++ so
 - **Mermaid Output**: `get_blueprint_graph` defaults to Mermaid format for easy visualization
 - **C++ Reference Aggregation**: Groups results by file, distinguishes definition vs usage
 
-### v0.3.0 Changes
-- **Minimal Tool Set**: Reduced from 22 to 9 tools
-- **Unified Interface**: `search`, `get_hierarchy`, `get_references`, `get_details`
-- **Three-Layer Search**: `scope` parameter supports `project`/`engine`/`all`
+</details>
 
 ## Quick Start (Recommended)
 
@@ -59,7 +70,8 @@ YourProject/
 ├── Plugins/
 │   └── UnrealCopilot/    ← this folder
 │       ├── Source/
-│       ├── Mcp/
+│       ├── Content/
+│       ├── skills/       ← skill definitions
 │       └── UnrealCopilot.uplugin
 ```
 
@@ -84,37 +96,11 @@ Add to your Cursor MCP settings (use the copied URL):
 ```json
 {
   "mcpServers": {
-    "unreal-project-analyzer": {
+    "unreal-copilot": {
       "url": "http://127.0.0.1:19840/mcp"
     }
   }
 }
-```
-
-## Alternative: Run MCP Server Manually
-
-If you prefer running the MCP Server outside of Unreal Editor:
-
-```bash
-cd /path/to/UnrealCopilot
-
-# Install dependencies
-uv sync
-
-# Run with stdio (for Cursor MCP integration)
-uv run unreal-analyzer -- \
-  --cpp-source-path "/path/to/YourProject/Source" \
-  --unreal-engine-path "/path/to/UE_5.3/Engine/Source" \
-  --ue-plugin-host "localhost" \
-  --ue-plugin-port 8080 \
-  --default-scope project
-
-# Or run as HTTP server (for quick connect)
-uv run unreal-analyzer -- \
-  --transport http \
-  --mcp-host 127.0.0.1 \
-  --mcp-port 19840 \
-  --cpp-source-path "/path/to/YourProject/Source"
 ```
 
 ## Architecture
@@ -128,63 +114,124 @@ uv run unreal-analyzer -- \
 ┌──────────────────────────────────────────────────────────────────┐
 │                    MCP Server (Python/FastMCP)                   │
 │  ┌────────────────────────────────────────────────────────────┐  │
-│  │              C++ Source Analyzer (tree-sitter)             │  │
-│  │              Supports: project / engine / all              │  │
+│  │  Analysis Tools     │  Skill Tools                         │  │
+│  │  (search, refs...)  │  (list/read/run_unreal_skill)        │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  C++ Analyzer (tree-sitter)  │  SkillRunner (Python)       │  │
 │  └────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────┬─────────────────────────────────┘
-                                 │ HTTP
+                                 │ HTTP / import unreal
                                  ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│              UnrealCopilot Plugin (Editor)               │
+│              UnrealCopilot Plugin (Editor)                       │
 │  ┌─────────────────────────┐  ┌────────────────────────────────┐ │
-│  │   HTTP Server (:8080)   │  │   MCP Server (UE Python)       │ │
-│  │   Blueprint/Asset API   │  │   Managed by AnalyzerSubsystem │ │
-│  │   /health endpoint      │  │                                │ │
+│  │   HTTP Server (:8080)   │  │   CppSkillApiSubsystem         │ │
+│  │   Blueprint/Asset API   │  │   (Asset/BP/World/Editor ops)  │ │
 │  └─────────────────────────┘  └────────────────────────────────┘ │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │   MCP Server (UE Python) - Managed by McpServerSubsystem    │ │
+│  └─────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-## Search Scope (v0.2.0)
+## Available Tools (11 total)
 
-All C++ analysis tools support a `scope` parameter:
+### Analysis Tools (8)
 
-| Scope | Description | Use Case |
-|-------|-------------|----------|
-| `project` | Project source only (default) | Fast, focused searches |
-| `engine` | Engine source only | Understanding UE internals |
-| `all` | Both project and engine | Comprehensive analysis |
+| Tool | Description |
+|------|-------------|
+| `search` | Unified search across C++/Blueprint/Asset |
+| `get_hierarchy` | Get inheritance hierarchy (C++ or Blueprint) |
+| `get_references` | Get references (outgoing/incoming/both) |
+| `get_details` | Get detailed information (C++/Blueprint/Asset) |
+| `get_blueprint_graph` | Blueprint node graph (Mermaid/summary/JSON) |
+| `detect_ue_patterns` | UE macro detection (UPROPERTY/UFUNCTION/UCLASS) |
+| `trace_reference_chain` | Cross-domain reference chain |
+| `find_cpp_class_usage` | C++ class usage in Blueprint + C++ |
 
-Example:
-```python
-# Only search project code (fast)
-await search_cpp_code("Health", scope="project")
+### Skill Tools (3)
 
-# Only search engine code  
-await analyze_cpp_class("ACharacter", scope="engine")
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `list_unreal_skill` | `query?` | List available skills (name, description, tags) |
+| `read_unreal_skill` | `skill_name`, `path?` | Read skill files (default: SKILL.md + tree) |
+| `run_unreal_skill` | `skill_name?`, `script?`, `args?`, `python?` | Execute skill script or inline Python |
 
-# Search everywhere (slower but complete)
-await find_cpp_references("UAbilitySystemComponent", scope="all")
+## Skill System
+
+Skills are discoverable, documented editor capabilities that AI agents can find, understand, and execute.
+
+### Skill Directory Structure
+
+```
+UnrealCopilot/skills/
+├── cpp_asset_api/           # Asset primitives documentation
+│   ├── SKILL.md
+│   └── docs/overview.md
+├── cpp_blueprint_api/       # Blueprint primitives documentation
+│   ├── SKILL.md
+│   └── docs/overview.md
+├── cpp_world_api/           # World/Level primitives documentation
+│   ├── SKILL.md
+│   └── docs/overview.md
+├── cpp_editor_api/          # Editor operations documentation
+│   ├── SKILL.md
+│   └── docs/overview.md
+├── cpp_validation_api/      # Validation primitives documentation
+│   ├── SKILL.md
+│   └── docs/overview.md
+└── skill_script/            # Example executable skill
+    ├── SKILL.md
+    └── scripts/echo_args.py
 ```
 
-## Available Tools (8 total)
+### SKILL.md Format
 
-### Core Tools (4)
+```yaml
+---
+name: cpp_asset_api
+description: CppSkillApiSubsystem asset primitives (rename/duplicate/delete/save)
+tags: [cpp, asset]
+---
 
-| Tool | Parameters | Description |
-|------|------------|-------------|
-| `search` | `query`, `domain`, `scope`, `type_filter`, `max_results` | Unified search across C++/Blueprint/Asset |
-| `get_hierarchy` | `name`, `domain`, `scope` | Get inheritance hierarchy (C++ or Blueprint) |
-| `get_references` | `path`, `domain`, `scope`, `direction` | Get references (outgoing/incoming/both) |
-| `get_details` | `path`, `domain`, `scope` | Get detailed information (C++/Blueprint/Asset) |
+# CppSkillApiSubsystem - AssetOps
 
-### Specialized Tools (4)
+Documentation content...
+```
 
-| Tool | Parameters | Description |
-|------|------------|-------------|
-| `get_blueprint_graph` | `bp_path`, `graph_name`, `format` | Blueprint node graph (Mermaid/summary/JSON) |
-| `detect_ue_patterns` | `file_path`, `format` | UE macro detection (detailed/summary) |
-| `trace_reference_chain` | `start_asset`, `max_depth`, `direction` | Cross-domain reference chain |
-| `find_cpp_class_usage` | `cpp_class`, `scope`, `max_results` | C++ class usage in Blueprint + C++ |
+### Using Skills (Agent Workflow)
+
+```python
+# 1. Discover available skills
+skills = await list_unreal_skill()
+# Returns: [{name, description, tags, skill_root}, ...]
+
+# 2. Read skill documentation
+doc = await read_unreal_skill(skill_name="cpp_asset_api")
+# Returns: {content: "...", tree: ["SKILL.md", "docs/overview.md"]}
+
+# 3. Read detailed API docs
+api_doc = await read_unreal_skill(skill_name="cpp_asset_api", path="docs/overview.md")
+
+# 4. Execute inline Python using the API
+result = await run_unreal_skill(python="""
+import unreal
+api = unreal.get_editor_subsystem(unreal.CppSkillApiSubsystem)
+success, error = api.rename_asset("/Game/OldName", "/Game/NewName")
+RESULT = {"success": success, "error": error}
+""")
+```
+
+### CppSkillApiSubsystem Primitives
+
+| Category | Operations |
+|----------|------------|
+| **Asset** | `RenameAsset`, `DuplicateAsset`, `DeleteAsset`, `SaveAsset` |
+| **Blueprint** | `CreateBlueprint`, `CompileBlueprint`, `SaveBlueprint`, `SetBlueprintCDOPropertyByString`, `AddBlueprintComponent`, `RemoveBlueprintComponent` |
+| **World** | `LoadMap`, `SpawnActorByClassPath`, `FindActorByName`, `DestroyActorByName`, `SetActorPropertyByString`, `SetActorTransformByName` |
+| **Editor** | `ListDirtyPackages`, `SaveDirtyPackages`, `UndoLastTransaction`, `RedoLastTransaction` |
+| **Validation** | `CompileAllBlueprintsSummary` |
 
 ## Plugin Settings
 
@@ -192,7 +239,6 @@ await find_cpp_references("UAbilitySystemComponent", scope="all")
 |---------|-------------|---------|
 | `Auto Start MCP Server` | Start MCP when Editor launches | `false` |
 | `Uv Executable` | Path to uv binary | `uv` |
-| `Capture Server Output` | Print MCP output to UE Log | `true` |
 | `Transport` | MCP transport mode | `http` |
 | `MCP Port` | HTTP/SSE listen port | `19840` |
 | `Cpp Source Path` | Project C++ source root | Auto-detect |
@@ -200,48 +246,59 @@ await find_cpp_references("UAbilitySystemComponent", scope="all")
 
 ## Example Usage
 
-### Using Unified Search
-
-```python
-# Search for "Health" across all domains
-result = await search(query="Health")  # domain="all", scope="project" by default
-
-# Search only Blueprints with parent class filter
-result = await search(query="GA_*", domain="blueprint", type_filter="GameplayAbility")
-
-# Get hierarchy for a C++ class
-hierarchy = await get_hierarchy(name="ACharacter", domain="cpp", scope="engine")
-
-# Get Blueprint graph as Mermaid (default format)
-graph = await get_blueprint_graph(bp_path="/Game/BP_Player")
-# graph["mermaid"] can be pasted to https://mermaid.live
-```
-
-### Trace a GAS Ability
+### Analysis: Trace a GAS Ability
 
 ```
-User: 帮我追踪 GA_Hero_Dash 这个能力是怎么触发和执行的
+User: Help me trace how GA_Hero_Dash is triggered and executed
 
 Agent:
 [Uses search, get_hierarchy, get_blueprint_graph...]
 
-GA_Hero_Dash 完整流程：
+GA_Hero_Dash complete flow:
 
-触发路径：
-玩家按下 Shift → IA_Dash → IC_Default_KBM 
+Trigger path:
+Player presses Shift → IA_Dash → IC_Default_KBM 
   → ULyraHeroComponent::Input_AbilityInputTagPressed()
   → ULyraAbilitySystemComponent::TryActivateAbility(Ability.Dash)
 
-执行逻辑 (EventGraph):
+Execution logic (EventGraph):
 1. ActivateAbility → IsLocallyControlled?
 2. SelectDirectionalMontage → Set Direction
 3. CommitAbility → PlayMontageAndWait
 4. ApplyRootMotionConstantForce
 5. Delay → EndAbility
+```
 
-关联资产：
-- GE_HeroDash_Cooldown (GameplayEffect)
-- Dash_Fwd/Bwd/Left/Right Montages
+### Skill: Batch Rename Assets
+
+```
+User: Rename all blueprints in /Game/Characters/ that start with "Old_" to "New_"
+
+Agent:
+[Uses list_unreal_skill to find cpp_asset_api, read_unreal_skill to understand API]
+
+result = await run_unreal_skill(python="""
+import unreal
+
+api = unreal.get_editor_subsystem(unreal.CppSkillApiSubsystem)
+registry = unreal.AssetRegistryHelpers.get_asset_registry()
+
+# Find matching assets
+filter = unreal.ARFilter()
+filter.package_paths = ["/Game/Characters"]
+assets = registry.get_assets(filter)
+
+renamed = []
+for asset in assets:
+    name = str(asset.asset_name)
+    if name.startswith("Old_"):
+        old_path = str(asset.package_name)
+        new_path = old_path.replace("Old_", "New_")
+        success, error = api.rename_asset(old_path, new_path)
+        renamed.append({"old": old_path, "new": new_path, "success": success})
+
+RESULT = {"renamed": renamed}
+""")
 ```
 
 ## Health Check
@@ -258,7 +315,7 @@ Response:
   "ok": true,
   "status": "running",
   "plugin": "UnrealCopilot",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "ue_version": "5.3.2-xxx",
   "project_name": "LyraStarterGame"
 }
@@ -290,5 +347,3 @@ This project was inspired by and references implementations from:
 ## License
 
 MIT
-
-

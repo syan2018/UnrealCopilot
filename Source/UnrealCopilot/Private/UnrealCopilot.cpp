@@ -1,4 +1,4 @@
-﻿// Copyright Unreal Copilot Team. All Rights Reserved.
+// Copyright Unreal Copilot Team. All Rights Reserved.
 
 #include "UnrealCopilot.h"
 #include "HttpServerModule.h"
