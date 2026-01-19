@@ -20,7 +20,7 @@ import sys
 from fastmcp import FastMCP
 
 from .config import get_config
-from .tools import blueprint, cpp, cross_domain, unified
+from .tools import blueprint, cpp, cross_domain, unified, skills
 
 # Initialize MCP server
 mcp = FastMCP(
@@ -39,7 +39,7 @@ def register_tools():
     """
     Register MCP tools.
 
-    Minimal toolset (8 total):
+    Minimal analyzer toolset (8 total) + skill tools (3 total):
 
     Core tools (4):
     - search: Unified search (C++/Blueprint/Asset)
@@ -107,6 +107,14 @@ def register_tools():
         print(f"[Unreal Analyzer] Registered {tool_count} tools (minimal toolset).")
     else:
         print(f"[Unreal Analyzer] Registered {tool_count} tools (C++-only mode).")
+
+    # ========================================================================
+    # Skill tools（与分析能力解耦，始终可用）
+    # ========================================================================
+
+    mcp.tool(description="List Unreal skills (SKILL.md summaries)")(skills.list_unreal_skill)
+    mcp.tool(description="Read Unreal skill files (default SKILL.md)")(skills.read_unreal_skill)
+    mcp.tool(description="Run Unreal skill script or inline Python")(skills.run_unreal_skill)
 
 
 def initialize_from_environment():

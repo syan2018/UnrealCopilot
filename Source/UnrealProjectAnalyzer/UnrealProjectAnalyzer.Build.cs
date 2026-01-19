@@ -30,9 +30,11 @@ public class UnrealProjectAnalyzer : ModuleRules
             "UnrealEd",
             "BlueprintGraph",
             "Kismet",
+            "KismetCompiler",
 
             // Asset Registry
             "AssetRegistry",
+            "AssetTools",
 
             // Python integration
             "PythonScriptPlugin",
