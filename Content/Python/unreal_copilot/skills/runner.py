@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import contextlib
 import io
@@ -7,6 +7,14 @@ import runpy
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    from ..execution import run_on_main_thread
+except ImportError:
+    # Fallback (e.g. tests)
+    def run_on_main_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
 
 
 class SkillRunner:
@@ -90,10 +98,14 @@ class SkillRunner:
     def run_inline_python(
         self, python_code: str, args: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        stdout, result, error = self._exec_inline(python_code, args or {})
+        def _do():
+            return self._exec_inline(python_code, args or {})
+
+        stdout, result, error = run_on_main_thread(_do)
         if error:
             return {"ok": False, "stdout": stdout, "error": error}
         return {"ok": True, "stdout": stdout, "result": result}
+
 
     def _resolve_default_skills_root(self) -> Path:
         # .../Plugins/UnrealCopilot/Content/Python/unreal_copilot/skills/runner.py
@@ -176,10 +188,14 @@ class SkillRunner:
         return ""
 
     def _exec_script(self, script_path: Path, args: Dict[str, Any]) -> Dict[str, Any]:
-        stdout, result, error = self._exec_with_capture(script_path, args)
+        def _do():
+            return self._exec_with_capture(script_path, args)
+
+        stdout, result, error = run_on_main_thread(_do)
         if error:
             return {"ok": False, "stdout": stdout, "error": error}
         return {"ok": True, "stdout": stdout, "result": result}
+
 
     def _exec_with_capture(self, script_path: Path, args: Dict[str, Any]) -> Tuple[str, Any, str]:
         stdout_buffer = io.StringIO()

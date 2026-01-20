@@ -661,6 +661,13 @@ if __name__ != "__main__":
         # Register main-thread notification pump (required for Python -> C++ state updates)
         _ensure_cpp_notify_pump_registered_once()
 
+        # Initialize execution module (register main thread dispatcher)
+        try:
+            import unreal_copilot.execution
+            unreal_copilot.execution.ensure_tick_registered()
+        except Exception as e:
+            unreal.log_error(f"[UnrealCopilot] Failed to initialize execution module: {e}")
+
         result = setup_analyzer_bridge()
         if result:
             unreal.log("[UnrealCopilot] Analyzer initialized successfully")
